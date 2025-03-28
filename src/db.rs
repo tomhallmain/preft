@@ -1,7 +1,7 @@
 use anyhow::Result;
 use rusqlite::{Connection, params, types::FromSql, types::ValueRef, types::FromSqlError, types::Type};
 use chrono::NaiveDate;
-use crate::models::{Flow, Category, FlowType, get_default_categories};
+use crate::models::{Flow, Category, FlowType, TaxDeductionInfo, get_default_categories};
 
 pub struct Database {
     conn: Connection,
@@ -43,7 +43,9 @@ impl Database {
                 id TEXT PRIMARY KEY,
                 name TEXT NOT NULL,
                 flow_type TEXT NOT NULL,
-                fields TEXT NOT NULL
+                fields TEXT NOT NULL,
+                tax_deduction_allowed INTEGER NOT NULL,
+                tax_deduction_default INTEGER NOT NULL
             )",
             [],
         )?;
@@ -57,6 +59,7 @@ impl Database {
                 description TEXT NOT NULL,
                 linked_flows TEXT NOT NULL,
                 custom_fields TEXT NOT NULL,
+                tax_deductible INTEGER,
                 FOREIGN KEY (category_id) REFERENCES categories(id)
             )",
             [],
@@ -69,13 +72,15 @@ impl Database {
         let fields_json = serde_json::to_string(&category.fields)?;
         
         self.conn.execute(
-            "INSERT OR REPLACE INTO categories (id, name, flow_type, fields)
-             VALUES (?1, ?2, ?3, ?4)",
+            "INSERT OR REPLACE INTO categories (id, name, flow_type, fields, tax_deduction_allowed, tax_deduction_default)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
             params![
                 category.id,
                 category.name,
                 category.flow_type.to_string(),
-                fields_json
+                fields_json,
+                if category.tax_deduction.deduction_allowed { 1 } else { 0 },
+                if category.tax_deduction.default_value { 1 } else { 0 }
             ],
         )?;
 
@@ -87,8 +92,8 @@ impl Database {
         let custom_fields_json = serde_json::to_string(&flow.custom_fields)?;
         
         self.conn.execute(
-            "INSERT OR REPLACE INTO flows (id, date, amount, category_id, description, linked_flows, custom_fields)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
+            "INSERT OR REPLACE INTO flows (id, date, amount, category_id, description, linked_flows, custom_fields, tax_deductible)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
             params![
                 flow.id,
                 flow.date.to_string(),
@@ -96,7 +101,8 @@ impl Database {
                 flow.category_id,
                 flow.description,
                 linked_flows_json,
-                custom_fields_json
+                custom_fields_json,
+                flow.tax_deductible.map(|b| if b { 1 } else { 0 })
             ],
         )?;
 
@@ -105,20 +111,41 @@ impl Database {
 
     pub fn load_categories(&self) -> Result<Vec<Category>> {
         let mut stmt = self.conn.prepare(
-            "SELECT id, name, flow_type, fields FROM categories"
+            "SELECT id, name, flow_type, fields, tax_deduction_allowed, tax_deduction_default FROM categories"
         )?;
 
         let categories = stmt.query_map([], |row| {
+            let flow_type_str: String = row.get(2)?;
+            let flow_type = match flow_type_str.as_str() {
+                "Income" => FlowType::Income,
+                "Expense" => FlowType::Expense,
+                _ => return Err(rusqlite::Error::FromSqlConversionFailure(
+                    2,
+                    rusqlite::types::Type::Text,
+                    Box::new(std::io::Error::new(
+                        std::io::ErrorKind::InvalidData,
+                        format!("Invalid flow type: {}", flow_type_str),
+                    )),
+                )),
+            };
+
             let fields_json: String = row.get(3)?;
             let fields = serde_json::from_str(&fields_json)
-                .map_err(|e| rusqlite::Error::FromSqlConversionFailure(0, rusqlite::types::Type::Text, Box::new(e)))?;
+                .map_err(|e| rusqlite::Error::FromSqlConversionFailure(3, rusqlite::types::Type::Text, Box::new(e)))?;
+
+            let tax_deduction_allowed: i64 = row.get(4)?;
+            let tax_deduction_default: i64 = row.get(5)?;
 
             Ok(Category {
                 id: row.get(0)?,
                 name: row.get(1)?,
-                flow_type: row.get(2)?,
-                fields,
+                flow_type,
                 parent_id: None,
+                fields,
+                tax_deduction: TaxDeductionInfo {
+                    deduction_allowed: tax_deduction_allowed != 0,
+                    default_value: tax_deduction_default != 0,
+                },
             })
         })?;
 
@@ -132,7 +159,7 @@ impl Database {
 
     pub fn load_flows(&self) -> Result<Vec<Flow>> {
         let mut stmt = self.conn.prepare(
-            "SELECT id, date, amount, category_id, description, linked_flows, custom_fields FROM flows"
+            "SELECT id, date, amount, category_id, description, linked_flows, custom_fields, tax_deductible FROM flows"
         )?;
 
         let flows = stmt.query_map([], |row| {
@@ -148,6 +175,9 @@ impl Database {
             let custom_fields = serde_json::from_str(&custom_fields_json)
                 .map_err(|e| rusqlite::Error::FromSqlConversionFailure(6, rusqlite::types::Type::Text, Box::new(e)))?;
 
+            let tax_deductible: Option<i64> = row.get(7)?;
+            let tax_deductible = tax_deductible.map(|i| i != 0);
+
             Ok(Flow {
                 id: row.get(0)?,
                 date,
@@ -156,6 +186,7 @@ impl Database {
                 description: row.get(4)?,
                 linked_flows,
                 custom_fields,
+                tax_deductible,
             })
         })?;
 

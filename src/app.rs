@@ -52,6 +52,7 @@ impl PreftApp {
             description: String::new(),
             linked_flows: Vec::new(),
             custom_fields: HashMap::new(),
+            tax_deductible: None,
         };
         self.new_flow = Some(new_flow.clone());
         self.flow_editor_state.set_editor(new_flow);
@@ -83,6 +84,7 @@ impl PreftApp {
                     description: String::new(),
                     linked_flows: Vec::new(),
                     custom_fields: HashMap::new(),
+                    tax_deductible: None,
                 });
                 // Update the editor with the new flow
                 self.flow_editor_state.set_editor(self.new_flow.as_ref().unwrap().clone());

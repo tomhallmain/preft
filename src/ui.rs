@@ -94,6 +94,17 @@ impl FlowEditor {
                         }
                     });
 
+                    // Show tax_deductible checkbox for relevant categories
+                    if category.tax_deduction.deduction_allowed {
+                        ui.horizontal(|ui| {
+                            ui.label("Tax Deductible:");
+                            let mut is_deductible = self.flow_data.tax_deductible.unwrap_or(category.tax_deduction.default_value);
+                            if ui.checkbox(&mut is_deductible, "").changed() {
+                                self.flow_data.tax_deductible = Some(is_deductible);
+                            }
+                        });
+                    }
+
                     ui.separator();
 
                     // Category-specific fields
@@ -217,6 +228,10 @@ fn show_category_flows(ui: &mut egui::Ui, app: &mut PreftApp, category: &Categor
             ui.label("Date");
             ui.label("Amount");
             ui.label("Description");
+            // Show tax_deductible for relevant categories
+            if category.tax_deduction.deduction_allowed {
+                ui.label("Tax Deductible");
+            }
             for field in &category.fields {
                 ui.label(&field.name);
             }
@@ -225,11 +240,50 @@ fn show_category_flows(ui: &mut egui::Ui, app: &mut PreftApp, category: &Categor
             // Data rows
             for flow in app.flows.iter().filter(|f| f.category_id == category.id) {
                 ui.label(flow.date.to_string());
-                ui.label(format!("{:.2}", flow.amount));
+                ui.label(format!("${:.2}", flow.amount));
                 ui.label(&flow.description);
+                // Show tax_deductible for relevant categories
+                if category.tax_deduction.deduction_allowed {
+                    if let Some(is_deductible) = flow.tax_deductible {
+                        if is_deductible {
+                            ui.label("☒"); // Unicode checked box
+                        } else {
+                            ui.label("☐"); // Unicode empty box
+                        }
+                    } else {
+                        ui.label("☐"); // Unicode empty box
+                    }
+                }
                 for field in &category.fields {
                     if let Some(value) = flow.custom_fields.get(&field.name) {
-                        ui.label(value);
+                        match field.field_type {
+                            crate::models::FieldType::Boolean => {
+                                if value.parse::<bool>().unwrap_or(false) {
+                                    ui.label("✓");
+                                } else {
+                                    ui.label("");
+                                }
+                            },
+                            crate::models::FieldType::Number => {
+                                if let Ok(num) = value.parse::<f64>() {
+                                    ui.label(format!("${:.2}", num));
+                                } else {
+                                    ui.label(value);
+                                }
+                            },
+                            _ => {
+                                // For text, select, and date fields, capitalize first letter
+                                let mut display_value = value.clone();
+                                if !display_value.is_empty() {
+                                    let mut chars: Vec<char> = display_value.chars().collect();
+                                    if let Some(first) = chars.first_mut() {
+                                        *first = first.to_uppercase().next().unwrap_or(*first);
+                                    }
+                                    display_value = chars.into_iter().collect();
+                                }
+                                ui.label(&display_value);
+                            }
+                        }
                     } else {
                         ui.label("");
                     }

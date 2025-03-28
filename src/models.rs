@@ -18,12 +18,19 @@ impl std::fmt::Display for FlowType {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct TaxDeductionInfo {
+    pub deduction_allowed: bool,
+    pub default_value: bool,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct Category {
     pub id: String,
     pub name: String,
     pub flow_type: FlowType,
     pub parent_id: Option<String>,
     pub fields: Vec<CategoryField>,
+    pub tax_deduction: TaxDeductionInfo,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -52,6 +59,7 @@ pub struct Flow {
     pub description: String,
     pub linked_flows: Vec<String>, // IDs of linked flows
     pub custom_fields: HashMap<String, String>,
+    pub tax_deductible: Option<bool>, // Optional because not all flows are tax-deductible
 }
 
 // Default categories that will be pre-defined
@@ -76,6 +84,10 @@ pub fn get_default_categories() -> Vec<Category> {
                     default_value: Some("Monthly".to_string()),
                 },
             ],
+            tax_deduction: TaxDeductionInfo {
+                deduction_allowed: false,
+                default_value: false,
+            },
         },
         Category {
             id: "passive_income".to_string(),
@@ -96,6 +108,10 @@ pub fn get_default_categories() -> Vec<Category> {
                     default_value: None,
                 },
             ],
+            tax_deduction: TaxDeductionInfo {
+                deduction_allowed: false,
+                default_value: false,
+            },
         },
         Category {
             id: "taxes_paid".to_string(),
@@ -116,6 +132,10 @@ pub fn get_default_categories() -> Vec<Category> {
                     default_value: None,
                 },
             ],
+            tax_deduction: TaxDeductionInfo {
+                deduction_allowed: true,
+                default_value: true,
+            },
         },
         Category {
             id: "cash_donations".to_string(),
@@ -129,13 +149,11 @@ pub fn get_default_categories() -> Vec<Category> {
                     required: true,
                     default_value: None,
                 },
-                CategoryField {
-                    name: "tax_deductible".to_string(),
-                    field_type: FieldType::Boolean,
-                    required: true,
-                    default_value: Some("true".to_string()),
-                },
             ],
+            tax_deduction: TaxDeductionInfo {
+                deduction_allowed: true,
+                default_value: true,
+            },
         },
         Category {
             id: "in_kind_donations".to_string(),
@@ -155,13 +173,11 @@ pub fn get_default_categories() -> Vec<Category> {
                     required: true,
                     default_value: None,
                 },
-                CategoryField {
-                    name: "tax_deductible".to_string(),
-                    field_type: FieldType::Boolean,
-                    required: true,
-                    default_value: Some("true".to_string()),
-                },
             ],
+            tax_deduction: TaxDeductionInfo {
+                deduction_allowed: true,
+                default_value: true,
+            },
         },
         Category {
             id: "medical".to_string(),
@@ -188,6 +204,10 @@ pub fn get_default_categories() -> Vec<Category> {
                     default_value: Some("false".to_string()),
                 },
             ],
+            tax_deduction: TaxDeductionInfo {
+                deduction_allowed: true,
+                default_value: true,
+            },
         },
         Category {
             id: "dental".to_string(),
@@ -214,6 +234,10 @@ pub fn get_default_categories() -> Vec<Category> {
                     default_value: Some("false".to_string()),
                 },
             ],
+            tax_deduction: TaxDeductionInfo {
+                deduction_allowed: true,
+                default_value: true,
+            },
         },
         Category {
             id: "other_expense".to_string(),
@@ -234,6 +258,10 @@ pub fn get_default_categories() -> Vec<Category> {
                     default_value: Some("false".to_string()),
                 },
             ],
+            tax_deduction: TaxDeductionInfo {
+                deduction_allowed: true,
+                default_value: false,
+            },
         },
         Category {
             id: "other_income".to_string(),
@@ -254,6 +282,10 @@ pub fn get_default_categories() -> Vec<Category> {
                     default_value: Some("false".to_string()),
                 },
             ],
+            tax_deduction: TaxDeductionInfo {
+                deduction_allowed: false,
+                default_value: false,
+            },
         },
     ]
 } 
