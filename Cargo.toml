@@ -1,12 +1,16 @@
 [package]
-name = "preft-test"
+name = "preft"
 version = "0.1.0"
 edition = "2021"
 
 [dependencies]
-eframe = "0.26.2"  # egui framework
-egui = "0.26.2"    # egui core
+eframe = { version = "0.24.1", features = ["default"] }
+chrono = { version = "0.4.31", features = ["serde"] }
+uuid = { version = "1.6.1", features = ["v4", "serde"] }
 serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
-chrono = { version = "0.4", features = ["serde"] }
-uuid = { version = "1.7", features = ["v4", "serde"] } 
+thiserror = "1.0"
+anyhow = "1.0"
+rusqlite = { version = "0.30", features = ["bundled", "chrono"] }
+dirs = "5.0"
+winapi = { version = "0.3.9", features = ["winuser", "windef", "minwindef", "winbase"] } 

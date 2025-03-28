@@ -8,7 +8,16 @@ pub enum FlowType {
     Expense,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+impl std::fmt::Display for FlowType {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            FlowType::Income => write!(f, "Income"),
+            FlowType::Expense => write!(f, "Expense"),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct Category {
     pub id: String,
     pub name: String,
@@ -17,7 +26,7 @@ pub struct Category {
     pub fields: Vec<CategoryField>,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct CategoryField {
     pub name: String,
     pub field_type: FieldType,
@@ -25,7 +34,7 @@ pub struct CategoryField {
     pub default_value: Option<String>,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub enum FieldType {
     Text,
     Number,

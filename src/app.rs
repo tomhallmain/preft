@@ -4,6 +4,7 @@ use uuid::Uuid;
 
 use crate::models::{Flow, Category, get_default_categories};
 use crate::ui::{show_main_panel, FlowEditorState};
+use crate::db::Database;
 
 pub struct PreftApp {
     pub categories: Vec<Category>,
@@ -14,24 +15,34 @@ pub struct PreftApp {
     pub editing_flow: Option<Flow>,
     pub custom_field_values: HashMap<String, String>,
     flow_editor_state: FlowEditorState,
+    db: Database,
 }
 
-impl Default for PreftApp {
-    fn default() -> Self {
+impl PreftApp {
+    pub fn new() -> Self {
+        // Initialize database
+        let db = Database::new().expect("Failed to initialize database");
+        
+        // Load categories from database or use defaults if none exist
+        let categories = db.load_categories()
+            .unwrap_or_else(|_| get_default_categories());
+            
+        // Load flows from database
+        let flows = db.load_flows().unwrap_or_default();
+        
         Self {
-            categories: get_default_categories(),
-            flows: Vec::new(),
+            categories,
+            flows,
             selected_category: None,
             show_category_editor: false,
             new_flow: None,
             editing_flow: None,
             custom_field_values: HashMap::new(),
             flow_editor_state: FlowEditorState::new(),
+            db,
         }
     }
-}
 
-impl PreftApp {
     pub fn create_new_flow(&mut self, category: &Category) {
         let new_flow = Flow {
             id: Uuid::new_v4().to_string(),
@@ -54,6 +65,12 @@ impl PreftApp {
     }
 
     pub fn save_flow(&mut self, flow_data: Flow) {
+        // Save to database
+        if let Err(e) = self.db.save_flow(&flow_data) {
+            eprintln!("Failed to save flow: {}", e);
+            return;
+        }
+
         if self.new_flow.is_some() {
             if let Some(_) = self.new_flow.take() {
                 self.flows.push(flow_data.clone());
