@@ -55,7 +55,7 @@ impl PreftApp {
             tax_deductible: None,
         };
         self.new_flow = Some(new_flow.clone());
-        self.flow_editor_state.set_editor(new_flow);
+        self.flow_editor_state.set_editor(new_flow, true);
         // Initialize custom field values
         self.custom_field_values.clear();
         for field in &category.fields {
@@ -87,7 +87,7 @@ impl PreftApp {
                     tax_deductible: None,
                 });
                 // Update the editor with the new flow
-                self.flow_editor_state.set_editor(self.new_flow.as_ref().unwrap().clone());
+                self.flow_editor_state.set_editor(self.new_flow.as_ref().unwrap().clone(), true);
             }
         } else if self.editing_flow.is_some() {
             if let Some(editing_flow) = self.editing_flow.take() {
@@ -111,6 +111,11 @@ impl PreftApp {
         self.selected_category.as_ref()
             .and_then(|id| self.categories.iter().find(|c| c.id == *id))
     }
+
+    pub fn set_editing_flow(&mut self, flow: Flow) {
+        self.editing_flow = Some(flow.clone());
+        self.flow_editor_state.set_editor(flow, false);
+    }
 }
 
 impl eframe::App for PreftApp {
@@ -121,15 +126,15 @@ impl eframe::App for PreftApp {
             
             // Then show the flow editor if needed
             if self.flow_editor_state.has_editor() {
-                // Take the editor temporarily to avoid multiple mutable borrows
-                if let Some(mut editor) = self.flow_editor_state.take_editor() {
-                    // Get the category before showing the editor to avoid multiple mutable borrows
-                    let category = self.get_selected_category().cloned();
-                    if let Some(category) = category {
+                // Get the category before showing the editor to avoid multiple mutable borrows
+                let category = self.get_selected_category().cloned();
+                if let Some(category) = category {
+                    // Take the editor temporarily to avoid multiple mutable borrows
+                    if let Some(mut editor) = self.flow_editor_state.take_editor() {
                         editor.show(ui, self, &category);
                         // Only set the editor back if we're still in edit mode
                         if self.new_flow.is_some() || self.editing_flow.is_some() {
-                            self.flow_editor_state.set_editor(editor.take_flow_data());
+                            self.flow_editor_state.put_editor_back(editor);
                         }
                     }
                 }

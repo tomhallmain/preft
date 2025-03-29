@@ -27,27 +27,35 @@ impl FlowEditorState {
         }
     }
 
-    pub fn set_editor(&mut self, flow: Flow) {
-        self.editor = Some(FlowEditor::new(flow));
+    pub fn take_editor(&mut self) -> Option<FlowEditor> {
+        self.editor.take()
+    }
+
+    pub fn set_editor(&mut self, flow: Flow, is_new_flow: bool) {
+        self.editor = Some(FlowEditor::new(flow, is_new_flow));
+    }
+
+    pub fn put_editor_back(&mut self, editor: FlowEditor) {
+        self.editor = Some(editor);
     }
 
     pub fn clear_editor(&mut self) {
         self.editor = None;
     }
-
-    pub fn take_editor(&mut self) -> Option<FlowEditor> {
-        self.editor.take()
-    }
 }
 
 pub struct FlowEditor {
     flow_data: Flow,
+    is_new_flow: bool,
+    has_set_focus: bool,
 }
 
 impl FlowEditor {
-    pub fn new(flow: Flow) -> Self {
+    pub fn new(flow: Flow, is_new_flow: bool) -> Self {
         Self {
             flow_data: flow,
+            is_new_flow,
+            has_set_focus: false,
         }
     }
 
@@ -60,10 +68,12 @@ impl FlowEditor {
     }
 
     pub fn show(&mut self, ui: &mut egui::Ui, app: &mut PreftApp, category: &Category) {
+        let window_id = egui::Id::new("flow_editor_window");
         egui::Window::new("Edit Flow")
+            .id(window_id)
             .collapsible(false)
             .resizable(true)
-            .show(ui.ctx(), |ui| {
+            .show(ui.ctx(), |ui| {                
                 ui.vertical(|ui| {
                     // Basic flow information
                     ui.horizontal(|ui| {
@@ -79,10 +89,15 @@ impl FlowEditor {
                     ui.horizontal(|ui| {
                         ui.label("Amount:");
                         let mut amount_str = self.flow_data.amount.to_string();
-                        if ui.text_edit_singleline(&mut amount_str).changed() {
+                        let amount_response = ui.text_edit_singleline(&mut amount_str);
+                        if amount_response.changed() {
                             if let Ok(amount) = amount_str.parse::<f64>() {
                                 self.flow_data.amount = amount;
                             }
+                        }
+                        if !self.has_set_focus {
+                            amount_response.request_focus();
+                            self.has_set_focus = true;
                         }
                     });
 
@@ -214,13 +229,11 @@ pub fn show_main_panel(ui: &mut egui::Ui, app: &mut PreftApp) {
 
 fn show_category_flows(ui: &mut egui::Ui, app: &mut PreftApp, category: &Category) {
     ui.heading(&category.name);
-    
-    // Add new flow button
+
     if ui.button("Add Flow").clicked() {
         app.create_new_flow(category);
     }
 
-    // Show flows for this category
     egui::Grid::new(format!("flows_grid_{}", category.id))
         .striped(true)
         .show(ui, |ui| {
@@ -235,33 +248,44 @@ fn show_category_flows(ui: &mut egui::Ui, app: &mut PreftApp, category: &Categor
             for field in &category.fields {
                 ui.label(&field.name);
             }
+            ui.label(""); // Empty header for edit button column
             ui.end_row();
 
             // Data rows
-            for flow in app.flows.iter().filter(|f| f.category_id == category.id) {
+            let flows: Vec<_> = app.flows.iter()
+                .filter(|f| f.category_id == category.id)
+                .cloned()
+                .collect();
+
+            for flow in flows {
+                // Date cell
                 ui.label(flow.date.to_string());
+                
+                // Amount cell
                 ui.label(format!("${:.2}", flow.amount));
+                
+                // Description cell
                 ui.label(&flow.description);
-                // Show tax_deductible for relevant categories
+                
+                // Tax deductible cell
                 if category.tax_deduction.deduction_allowed {
-                    if let Some(is_deductible) = flow.tax_deductible {
-                        if is_deductible {
-                            ui.label("☒"); // Unicode checked box
-                        } else {
-                            ui.label("☐"); // Unicode empty box
-                        }
-                    } else {
-                        ui.label("☐"); // Unicode empty box
-                    }
+                    let symbol = match flow.tax_deductible {
+                        Some(true) => "[X]",
+                        Some(false) => "[ ]",
+                        None => "[ ]",
+                    };
+                    ui.label(symbol);
                 }
+
+                // Custom fields cells
                 for field in &category.fields {
                     if let Some(value) = flow.custom_fields.get(&field.name) {
                         match field.field_type {
                             crate::models::FieldType::Boolean => {
                                 if value.parse::<bool>().unwrap_or(false) {
-                                    ui.label("✓");
+                                    ui.label("[X]");
                                 } else {
-                                    ui.label("");
+                                    ui.label("[ ]");
                                 }
                             },
                             crate::models::FieldType::Number => {
@@ -288,7 +312,22 @@ fn show_category_flows(ui: &mut egui::Ui, app: &mut PreftApp, category: &Categor
                         ui.label("");
                     }
                 }
+
+                // Edit button cell - always visible
+                if ui.button("Edit").clicked() {
+                    app.set_editing_flow(flow.clone());
+                    // Initialize custom field values
+                    app.custom_field_values.clear();
+                    for field in &category.fields {
+                        if let Some(value) = flow.custom_fields.get(&field.name) {
+                            app.custom_field_values.insert(field.name.clone(), value.clone());
+                        } else if let Some(default) = &field.default_value {
+                            app.custom_field_values.insert(field.name.clone(), default.clone());
+                        }
+                    }
+                }
+
                 ui.end_row();
             }
         });
-} 
+}
