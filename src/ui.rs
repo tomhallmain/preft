@@ -48,14 +48,19 @@ pub struct FlowEditor {
     flow_data: Flow,
     is_new_flow: bool,
     has_set_focus: bool,
+    date_input: String,  // Store raw date input
+    date_error: Option<String>,  // Store date validation error
 }
 
 impl FlowEditor {
     pub fn new(flow: Flow, is_new_flow: bool) -> Self {
+        let date_input = flow.date.to_string();  // Get the date string before moving flow
         Self {
             flow_data: flow,
             is_new_flow,
             has_set_focus: false,
+            date_input,
+            date_error: None,
         }
     }
 
@@ -78,13 +83,25 @@ impl FlowEditor {
                     // Basic flow information
                     ui.horizontal(|ui| {
                         ui.label("Date:");
-                        let mut date_str = self.flow_data.date.to_string();
-                        if ui.text_edit_singleline(&mut date_str).changed() {
-                            if let Ok(date) = chrono::NaiveDate::parse_from_str(&date_str, "%Y-%m-%d") {
-                                self.flow_data.date = date;
-                            }
+                        let response = ui.add(
+                            egui::TextEdit::singleline(&mut self.date_input)
+                                .hint_text("YYYY-MM-DD")
+                                .desired_width(100.0)
+                        );
+                        
+                        // Show visual feedback about the date format
+                        if !self.date_input.is_empty() && self.date_input.len() != 10 {
+                            let warning = ui.label(egui::RichText::new("⚠")
+                                .color(egui::Color32::from_rgb(200, 100, 0))  // Darker orange color
+                                .size(16.0));  // Slightly larger
+                            warning.on_hover_text("Date must be in YYYY-MM-DD format");
                         }
                     });
+
+                    // Show date error message if it exists
+                    if let Some(error) = &self.date_error {
+                        ui.label(egui::RichText::new(error).color(egui::Color32::RED));
+                    }
 
                     ui.horizontal(|ui| {
                         ui.label("Amount:");
@@ -189,7 +206,15 @@ impl FlowEditor {
                     // Save/Cancel buttons
                     ui.horizontal(|ui| {
                         if ui.button("Save").clicked() || ui.input(|i| i.key_pressed(egui::Key::Enter)) {
-                            app.save_flow(self.flow_data.clone());
+                            // Parse date only when saving
+                            if let Ok(date) = chrono::NaiveDate::parse_from_str(&self.date_input, "%Y-%m-%d") {
+                                self.flow_data.date = date;
+                                self.date_error = None;  // Clear any previous error
+                                app.save_flow(self.flow_data.clone());
+                            } else {
+                                // Store error message
+                                self.date_error = Some("Invalid date format or date. Please use YYYY-MM-DD".to_string());
+                            }
                         }
                         if ui.button("Cancel").clicked() || ui.input(|i| i.key_pressed(egui::Key::Escape)) {
                             app.cancel_flow_edit();
