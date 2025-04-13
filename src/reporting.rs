@@ -118,94 +118,27 @@ impl Default for ReportRequest {
 
 pub struct ReportGenerator {
     flows: Vec<Flow>,
+    title_font: Option<IndirectFontRef>,
+    subtitle_font: Option<IndirectFontRef>,
+    header_font: Option<IndirectFontRef>,
+    body_font: Option<IndirectFontRef>,
 }
 
 impl ReportGenerator {
     pub fn new(flows: Vec<Flow>) -> Self {
-        Self { flows }
+        Self { 
+            flows,
+            title_font: None,
+            subtitle_font: None,
+            header_font: None,
+            body_font: None,
+        }
     }
 
     pub fn generate_report(&self, request: &ReportRequest) -> Result<Vec<u8>, Box<dyn std::error::Error>> {
-        // Filter flows based on time period
-        let filtered_flows = self.filter_flows_by_period(&request.time_period);
-        
-        // Filter flows based on selection if specified
-        let filtered_flows = if !request.selected_flows.is_empty() {
-            filtered_flows.into_iter()
-                .filter(|flow| request.selected_flows.contains(&flow.id))
-                .collect()
-        } else {
-            filtered_flows
-        };
-
-        // Group flows if specified
-        let grouped_flows = if let Some(group_by) = &request.group_by {
-            self.group_flows(&filtered_flows, group_by)
-        } else {
-            vec![(None, filtered_flows)]
-        };
-
-        // Generate PDF
-        self.generate_pdf(&grouped_flows, request)
-    }
-
-    fn filter_flows_by_period(&self, period: &TimePeriod) -> Vec<Flow> {
-        let (start_date, end_date) = match period {
-            TimePeriod::LastYear => {
-                let now = chrono::Local::now().naive_local();
-                let last_year = now.year() - 1;
-                (
-                    NaiveDate::from_ymd_opt(last_year, 1, 1).unwrap(),
-                    NaiveDate::from_ymd_opt(last_year, 12, 31).unwrap()
-                )
-            },
-            TimePeriod::ThisYear => {
-                let now = chrono::Local::now().naive_local();
-                (
-                    NaiveDate::from_ymd_opt(now.year(), 1, 1).unwrap(),
-                    NaiveDate::from_ymd_opt(now.year(), 12, 31).unwrap()
-                )
-            },
-            TimePeriod::Custom(start, end) => (*start, *end),
-        };
-
-        self.flows.iter()
-            .filter(|flow| flow.date >= start_date && flow.date <= end_date)
-            .cloned()
-            .collect()
-    }
-
-    fn group_flows(&self, flows: &[Flow], field_name: &str) -> Vec<(Option<String>, Vec<Flow>)> {
-        let mut groups: HashMap<String, Vec<Flow>> = HashMap::new();
-        
-        for flow in flows {
-            if let Some(value) = flow.custom_fields.get(field_name) {
-                groups.entry(value.clone())
-                    .or_default()
-                    .push(flow.clone());
-            }
-        }
-
-        let mut result: Vec<(Option<String>, Vec<Flow>)> = groups.into_iter()
-            .map(|(k, v)| (Some(k), v))
-            .collect();
-        
-        // Sort by group name
-        result.sort_by(|a, b| a.0.cmp(&b.0));
-        
-        result
-    }
-
-    fn generate_pdf(&self, grouped_flows: &[(Option<String>, Vec<Flow>)], request: &ReportRequest) -> Result<Vec<u8>, Box<dyn std::error::Error>> {
-        // Create a new PDF document
-        let (doc, page, layer) = PdfDocument::new(
-            "Financial Report",
-            Mm(210.0), // A4 width
-            Mm(297.0), // A4 height
-            "Layer 1"
-        );
-
-        let mut layer = doc.get_page(page).get_layer(layer);
+        // Create a new document
+        let (doc, page1, layer1) = PdfDocument::new("Financial Report", Mm(210.0), Mm(297.0), "Layer 1");
+        let current_layer = doc.get_page(page1).get_layer(layer1);
 
         // Load fonts
         let title_font = self.load_font(&doc, &request.font_settings.title_font)?;
@@ -214,101 +147,136 @@ impl ReportGenerator {
         let body_font = self.load_font(&doc, &request.font_settings.body_font)?;
 
         // Add title
-        layer.set_font(&title_font, 24.0);
-        layer.set_text_cursor(Mm(20.0), Mm(270.0));
-        layer.write_text(&request.title, &title_font);
-
-        // Add subtitle if not empty
-        if !request.subtitle.is_empty() {
-            layer.set_font(&subtitle_font, 16.0);
-            layer.set_text_cursor(Mm(20.0), Mm(260.0));
-            layer.write_text(&request.subtitle, &subtitle_font);
-        }
-
-        // Add time period
-        let period_text = match &request.time_period {
+        current_layer.use_text(&request.title, 24.0, Mm(20.0), Mm(250.0), &title_font);
+        
+        // Add time period subheader
+        let time_period_text = match &request.time_period {
             TimePeriod::LastYear => {
-                let now = chrono::Local::now().naive_local();
-                let last_year = now.year() - 1;
-                format!("Period: January 1, {} - December 31, {}", last_year, last_year)
+                let now = chrono::Local::now();
+                let start = now.date_naive().with_month(1).unwrap().with_day(1).unwrap();
+                let end = start.with_year(start.year() - 1).unwrap();
+                format!("Time Period: {} to {}", end.format("%B %d, %Y"), start.format("%B %d, %Y"))
             },
             TimePeriod::ThisYear => {
-                let now = chrono::Local::now().naive_local();
-                format!("Period: January 1, {} - December 31, {}", now.year(), now.year())
+                let now = chrono::Local::now();
+                let start = now.date_naive().with_month(1).unwrap().with_day(1).unwrap();
+                format!("Time Period: {} to {}", start.format("%B %d, %Y"), now.format("%B %d, %Y"))
             },
             TimePeriod::Custom(start, end) => {
-                format!("Period: {} - {}", start.format("%B %d, %Y"), end.format("%B %d, %Y"))
+                format!("Time Period: {} to {}", start.format("%B %d, %Y"), end.format("%B %d, %Y"))
             },
         };
-        layer.set_font(&header_font, 12.0);
-        layer.set_text_cursor(Mm(20.0), Mm(250.0));
-        layer.write_text(&period_text, &header_font);
+        current_layer.use_text(&time_period_text, 12.0, Mm(20.0), Mm(230.0), &subtitle_font);
 
-        // Add a line separator
-        layer.set_outline_color(Color::Rgb(Rgb::new(0.0, 0.0, 0.0, None)));
-        layer.set_outline_thickness(0.5);
-        layer.add_line_break();
-        layer.add_line_break();
-
-        // Add flows
-        let mut y_pos = Mm(240.0);
-        for (group_name, flows) in grouped_flows {
-            // Add group header if grouping is enabled
-            if let Some(name) = group_name {
-                layer.set_font(&header_font, 14.0);
-                layer.set_text_cursor(Mm(20.0), y_pos);
-                layer.write_text(name, &header_font);
-                y_pos -= Mm(5.0);
-            }
-
-            // Add flows table
-            layer.set_font(&body_font, 10.0);
-            for flow in flows {
-                if y_pos < Mm(20.0) {
-                    // Add new page if we're running out of space
-                    let (new_page, new_layer) = doc.add_page(Mm(210.0), Mm(297.0), "Layer 1");
-                    y_pos = Mm(270.0);
-                    layer = doc.get_page(new_page).get_layer(new_layer);
-                }
-
-                // Date
-                layer.set_text_cursor(Mm(20.0), y_pos);
-                layer.write_text(&flow.date.format("%Y-%m-%d").to_string(), &body_font);
-
-                // Amount
-                layer.set_text_cursor(Mm(60.0), y_pos);
-                layer.write_text(&format!("${:.2}", flow.amount), &body_font);
-
-                // Description
-                layer.set_text_cursor(Mm(100.0), y_pos);
-                layer.write_text(&flow.description, &body_font);
-
-                y_pos -= Mm(5.0);
-            }
-
-            // Add group total if grouping is enabled
-            if group_name.is_some() {
-                let total: f64 = flows.iter().map(|f| f.amount).sum();
-                layer.set_font(&header_font, 10.0);
-                layer.set_text_cursor(Mm(20.0), y_pos);
-                layer.write_text("Total:", &header_font);
-                layer.set_text_cursor(Mm(60.0), y_pos);
-                layer.write_text(&format!("${:.2}", total), &header_font);
-                y_pos -= Mm(10.0);
-            }
+        // Group flows by category
+        let mut category_flows: HashMap<String, Vec<&Flow>> = HashMap::new();
+        for flow in &self.flows {
+            category_flows.entry(flow.category_id.clone())
+                .or_default()
+                .push(flow);
         }
 
-        // Add grand total
-        let grand_total: f64 = grouped_flows.iter()
-            .flat_map(|(_, flows)| flows.iter().map(|f| f.amount))
-            .sum();
-        layer.set_font(&header_font, 12.0);
-        layer.set_text_cursor(Mm(20.0), y_pos);
-        layer.write_text("Grand Total:", &header_font);
-        layer.set_text_cursor(Mm(60.0), y_pos);
-        layer.write_text(&format!("${:.2}", grand_total), &header_font);
+        // Create a new page for each category
+        let mut current_page = page1;
+        let mut current_layer = layer1;
+        let mut y_pos = Mm(200.0);
+        let mut page_count = 1;
 
-        // Save the PDF to a buffer
+        // Store category totals for later use
+        let mut category_totals: HashMap<String, f64> = HashMap::new();
+
+        for (category_id, flows) in &category_flows {
+            // If we're not on the first page, create a new page
+            if page_count > 1 {
+                let (page, layer) = doc.add_page(Mm(210.0), Mm(297.0), "Layer 1");
+                current_page = page;
+                current_layer = layer;
+                y_pos = Mm(250.0);
+            }
+
+            // Add category header
+            let layer = doc.get_page(current_page).get_layer(current_layer);
+            layer.use_text(&format!("Category: {}", category_id), 16.0, Mm(20.0), y_pos, &header_font);
+            y_pos -= Mm(15.0);
+
+            // Group flows if requested
+            if let Some(group_by) = &request.group_by {
+                let mut grouped_flows: HashMap<String, Vec<&Flow>> = HashMap::new();
+                for flow in flows {
+                    if let Some(value) = flow.custom_fields.get(group_by) {
+                        grouped_flows.entry(value.clone())
+                            .or_default()
+                            .push(flow);
+                    }
+                }
+
+                // Add each group
+                for (group_value, group_flows) in &grouped_flows {
+                    layer.use_text(&format!("{}: {}", group_by, group_value), 14.0, Mm(20.0), y_pos, &header_font);
+                    y_pos -= Mm(10.0);
+
+                    // Add flows in this group
+                    for flow in group_flows {
+                        let flow_text = format!("{} - ${:.2} - {}", 
+                            flow.date.format("%B %d, %Y"),
+                            flow.amount,
+                            flow.description
+                        );
+                        layer.use_text(&flow_text, 12.0, Mm(20.0), y_pos, &body_font);
+                        y_pos -= Mm(8.0);
+                    }
+
+                    // Add group total
+                    let group_total: f64 = group_flows.iter().map(|f| f.amount).sum();
+                    layer.use_text(&format!("Group Total: ${:.2}", group_total), 12.0, Mm(20.0), y_pos, &body_font);
+                    y_pos -= Mm(15.0);
+                }
+            } else {
+                // Add all flows without grouping
+                for flow in flows {
+                    let flow_text = format!("{} - ${:.2} - {}", 
+                        flow.date.format("%B %d, %Y"),
+                        flow.amount,
+                        flow.description
+                    );
+                    layer.use_text(&flow_text, 12.0, Mm(20.0), y_pos, &body_font);
+                    y_pos -= Mm(8.0);
+                }
+            }
+
+            // Add category total
+            let category_total: f64 = flows.iter().map(|f| f.amount).sum();
+            category_totals.insert(category_id.clone(), category_total);
+            layer.use_text(&format!("Category Total: ${:.2}", category_total), 14.0, Mm(20.0), y_pos, &header_font);
+            y_pos -= Mm(20.0);
+
+            page_count += 1;
+        }
+
+        // Add summary page
+        let (summary_page, summary_layer) = doc.add_page(Mm(210.0), Mm(297.0), "Layer 1");
+        let layer = doc.get_page(summary_page).get_layer(summary_layer);
+        
+        // Add summary title
+        layer.use_text("Summary", 20.0, Mm(20.0), Mm(250.0), &header_font);
+        
+        // Add category totals
+        let mut y_pos = Mm(220.0);
+        let mut overall_total = 0.0;
+        
+        for (category_id, total) in &category_totals {
+            overall_total += total;
+            
+            layer.use_text(&format!("{}: ${:.2}", category_id, total), 
+                14.0, Mm(20.0), y_pos, &body_font);
+            y_pos -= Mm(15.0);
+        }
+        
+        // Add overall total
+        layer.use_text(&format!("Overall Total: ${:.2}", overall_total), 
+            16.0, Mm(20.0), y_pos, &header_font);
+
+        // Save the document
         let mut buffer = Vec::new();
         {
             let mut writer = BufWriter::new(&mut buffer);
