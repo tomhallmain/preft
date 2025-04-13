@@ -3,6 +3,7 @@ mod db;
 mod app;
 mod ui;
 mod settings;
+mod reporting;
 
 use eframe::egui;
 use anyhow::Result;

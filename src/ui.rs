@@ -238,6 +238,9 @@ pub fn show_main_panel(ui: &mut egui::Ui, app: &mut PreftApp) {
         if ui.button("Add Category").clicked() {
             app.show_category_editor = true;
         }
+        if ui.button("Generate Report").clicked() {
+            app.show_report_dialog = true;
+        }
     });
 
     // Show category editor if needed
