@@ -50,17 +50,22 @@ pub struct FlowEditor {
     has_set_focus: bool,
     date_input: String,  // Store raw date input
     date_error: Option<String>,  // Store date validation error
+    amount_input: String,  // Store raw amount input
+    description_input: String,  // Store raw description input
 }
 
 impl FlowEditor {
     pub fn new(flow: Flow, is_new_flow: bool) -> Self {
-        let date_input = flow.date.to_string();  // Get the date string before moving flow
+        let flow_clone = flow.clone();
+        let date_input = flow_clone.date.to_string();  // Get the date string from the clone
         Self {
-            flow_data: flow,
+            flow_data: flow_clone,
             is_new_flow,
             has_set_focus: false,
             date_input,
             date_error: None,
+            amount_input: flow.amount.to_string(),
+            description_input: flow.description.clone(),
         }
     }
 
@@ -105,10 +110,9 @@ impl FlowEditor {
 
                     ui.horizontal(|ui| {
                         ui.label("Amount:");
-                        let mut amount_str = self.flow_data.amount.to_string();
-                        let amount_response = ui.text_edit_singleline(&mut amount_str);
+                        let amount_response = ui.text_edit_singleline(&mut self.amount_input);
                         if amount_response.changed() {
-                            if let Ok(amount) = amount_str.parse::<f64>() {
+                            if let Ok(amount) = self.amount_input.parse::<f64>() {
                                 self.flow_data.amount = amount;
                             }
                         }
@@ -120,9 +124,8 @@ impl FlowEditor {
 
                     ui.horizontal(|ui| {
                         ui.label("Description:");
-                        let mut description = self.flow_data.description.clone();
-                        if ui.text_edit_singleline(&mut description).changed() {
-                            self.flow_data.description = description;
+                        if ui.text_edit_singleline(&mut self.description_input).changed() {
+                            self.flow_data.description = self.description_input.clone();
                         }
                     });
 

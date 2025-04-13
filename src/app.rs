@@ -123,6 +123,10 @@ impl PreftApp {
                 // Update the editor with the new flow
                 self.flow_editor_state.set_editor(new_flow, true);
                 
+                // TODO: The amount and description fields in the flow editor are not being reset to their default values
+                // after saving a flow. This needs to be fixed by properly updating the FlowEditor's internal state
+                // (amount_input and description_input) when creating a new flow.
+                
                 // Reinitialize default values for the new flow
                 if let Some(category) = self.categories.iter().find(|c| c.id == category_id) {
                     self.custom_field_values.clear();
