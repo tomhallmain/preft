@@ -130,7 +130,11 @@ impl FlowEditor {
                     if category.tax_deduction.deduction_allowed {
                         ui.horizontal(|ui| {
                             ui.label("Tax Deductible:");
-                            let mut is_deductible = self.flow_data.tax_deductible.unwrap_or(category.tax_deduction.default_value);
+                            // Initialize with category default if not set
+                            if self.flow_data.tax_deductible.is_none() {
+                                self.flow_data.tax_deductible = Some(category.tax_deduction.default_value);
+                            }
+                            let mut is_deductible = self.flow_data.tax_deductible.unwrap();
                             if ui.checkbox(&mut is_deductible, "").changed() {
                                 self.flow_data.tax_deductible = Some(is_deductible);
                             }
