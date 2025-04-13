@@ -138,6 +138,32 @@ impl ReportGenerator {
     }
 
     pub fn generate_report(&self, request: &ReportRequest) -> Result<Vec<u8>, Box<dyn std::error::Error>> {
+        // Filter flows based on time period
+        let filtered_flows: Vec<&Flow> = self.flows.iter()
+            .filter(|flow| {
+                match &request.time_period {
+                    TimePeriod::LastYear => {
+                        let now = chrono::Local::now().date_naive();
+                        let start = now.with_month(1).unwrap().with_day(1).unwrap();
+                        let end = start.with_year(start.year() - 1).unwrap();
+                        flow.date >= end && flow.date < start
+                    },
+                    TimePeriod::ThisYear => {
+                        let now = chrono::Local::now().date_naive();
+                        let start = now.with_month(1).unwrap().with_day(1).unwrap();
+                        flow.date >= start && flow.date <= now
+                    },
+                    TimePeriod::Custom(start, end) => {
+                        flow.date >= *start && flow.date <= *end
+                    },
+                }
+            })
+            .collect();
+
+        // Sort flows by date (TODO: Add support for sorting by amount with higher priority)
+        let mut sorted_flows = filtered_flows;
+        sorted_flows.sort_by(|a, b| a.date.cmp(&b.date));
+
         // Create a new document
         let (doc, page1, layer1) = PdfDocument::new("Financial Report", Mm(210.0), Mm(297.0), "Layer 1");
         let current_layer = doc.get_page(page1).get_layer(layer1);
@@ -154,14 +180,14 @@ impl ReportGenerator {
         // Add time period subheader
         let time_period_text = match &request.time_period {
             TimePeriod::LastYear => {
-                let now = chrono::Local::now();
-                let start = now.date_naive().with_month(1).unwrap().with_day(1).unwrap();
+                let now = chrono::Local::now().date_naive();
+                let start = now.with_month(1).unwrap().with_day(1).unwrap();
                 let end = start.with_year(start.year() - 1).unwrap();
                 format!("Time Period: {} to {}", end.format("%B %d, %Y"), start.format("%B %d, %Y"))
             },
             TimePeriod::ThisYear => {
-                let now = chrono::Local::now();
-                let start = now.date_naive().with_month(1).unwrap().with_day(1).unwrap();
+                let now = chrono::Local::now().date_naive();
+                let start = now.with_month(1).unwrap().with_day(1).unwrap();
                 format!("Time Period: {} to {}", start.format("%B %d, %Y"), now.format("%B %d, %Y"))
             },
             TimePeriod::Custom(start, end) => {
@@ -172,7 +198,7 @@ impl ReportGenerator {
 
         // Group flows by category
         let mut category_flows: HashMap<String, Vec<&Flow>> = HashMap::new();
-        for flow in &self.flows {
+        for flow in sorted_flows {
             category_flows.entry(flow.category_id.clone())
                 .or_default()
                 .push(flow);

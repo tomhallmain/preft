@@ -3,6 +3,7 @@ use std::collections::HashMap;
 use uuid::Uuid;
 use std::fs::File;
 use std::io::Write;
+use chrono::Datelike;
 
 use crate::models::{Flow, Category, CategoryField, get_default_categories};
 use crate::ui::{show_main_panel, FlowEditorState};
@@ -243,21 +244,14 @@ impl eframe::App for PreftApp {
                         ui.horizontal(|ui| {
                             ui.label("Time Period:");
                             egui::ComboBox::from_id_source("time_period")
-                                .selected_text(match &report_request.time_period {
-                                    crate::reporting::TimePeriod::LastYear => "Last Year",
-                                    crate::reporting::TimePeriod::ThisYear => "This Year",
-                                    crate::reporting::TimePeriod::Custom(_, _) => "Custom",
-                                })
+                                .selected_text(format!("{:?}", self.report_request.time_period))
                                 .show_ui(ui, |ui| {
-                                    ui.selectable_value(&mut report_request.time_period, 
-                                        crate::reporting::TimePeriod::LastYear, "Last Year");
-                                    ui.selectable_value(&mut report_request.time_period, 
-                                        crate::reporting::TimePeriod::ThisYear, "This Year");
-                                    ui.selectable_value(&mut report_request.time_period, 
-                                        crate::reporting::TimePeriod::Custom(
-                                            chrono::Local::now().naive_local().date(),
-                                            chrono::Local::now().naive_local().date()
-                                        ), "Custom");
+                                    ui.selectable_value(&mut self.report_request.time_period, crate::reporting::TimePeriod::LastYear, "Last Year");
+                                    ui.selectable_value(&mut self.report_request.time_period, crate::reporting::TimePeriod::ThisYear, "This Year");
+                                    ui.selectable_value(&mut self.report_request.time_period, crate::reporting::TimePeriod::Custom(
+                                        chrono::Local::now().date_naive().with_month(1).unwrap().with_day(1).unwrap(),
+                                        chrono::Local::now().date_naive()
+                                    ), "Custom");
                                 });
                         });
 
