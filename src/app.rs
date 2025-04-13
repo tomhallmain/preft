@@ -108,18 +108,30 @@ impl PreftApp {
             if let Some(_) = self.new_flow.take() {
                 self.flows.push(flow_data.clone());
                 // Create a new flow for the next entry
-                self.new_flow = Some(Flow {
+                let category_id = flow_data.category_id.clone();
+                let new_flow = Flow {
                     id: Uuid::new_v4().to_string(),
                     date: chrono::Local::now().naive_local().date(),
                     amount: 0.0,
-                    category_id: flow_data.category_id.clone(),
+                    category_id: category_id.clone(),
                     description: String::new(),
                     linked_flows: Vec::new(),
                     custom_fields: HashMap::new(),
                     tax_deductible: None,
-                });
+                };
+                self.new_flow = Some(new_flow.clone());
                 // Update the editor with the new flow
-                self.flow_editor_state.set_editor(self.new_flow.as_ref().unwrap().clone(), true);
+                self.flow_editor_state.set_editor(new_flow, true);
+                
+                // Reinitialize default values for the new flow
+                if let Some(category) = self.categories.iter().find(|c| c.id == category_id) {
+                    self.custom_field_values.clear();
+                    for field in &category.fields {
+                        if let Some(default) = &field.default_value {
+                            self.custom_field_values.insert(field.name.clone(), default.clone());
+                        }
+                    }
+                }
             }
         } else if self.editing_flow.is_some() {
             if let Some(editing_flow) = self.editing_flow.take() {
@@ -129,7 +141,6 @@ impl PreftApp {
                 }
             }
         }
-        self.custom_field_values.clear();
     }
 
     pub fn cancel_flow_edit(&mut self) {
