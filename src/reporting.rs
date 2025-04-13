@@ -118,6 +118,7 @@ impl Default for ReportRequest {
 
 pub struct ReportGenerator {
     flows: Vec<Flow>,
+    categories: HashMap<String, String>, // category_id -> category_name
     title_font: Option<IndirectFontRef>,
     subtitle_font: Option<IndirectFontRef>,
     header_font: Option<IndirectFontRef>,
@@ -125,9 +126,10 @@ pub struct ReportGenerator {
 }
 
 impl ReportGenerator {
-    pub fn new(flows: Vec<Flow>) -> Self {
+    pub fn new(flows: Vec<Flow>, categories: HashMap<String, String>) -> Self {
         Self { 
             flows,
+            categories,
             title_font: None,
             subtitle_font: None,
             header_font: None,
@@ -196,8 +198,21 @@ impl ReportGenerator {
 
             // Add category header
             let layer = doc.get_page(current_page).get_layer(current_layer);
-            layer.use_text(&format!("Category: {}", category_id), 16.0, Mm(20.0), y_pos, &header_font);
+            let category_name = self.categories.get(category_id)
+                .map(|name| name.as_str())
+                .unwrap_or(category_id);
+            layer.use_text(&format!("Category: {}", category_name), 16.0, Mm(20.0), y_pos, &header_font);
             y_pos -= Mm(15.0);
+
+            // Add table headers
+            layer.use_text("Date", 12.0, Mm(20.0), y_pos, &header_font);
+            layer.use_text("Amount", 12.0, Mm(80.0), y_pos, &header_font);
+            layer.use_text("Description", 12.0, Mm(140.0), y_pos, &header_font);
+            y_pos -= Mm(10.0);
+
+            // Add separator line
+            layer.add_line_break();
+            y_pos -= Mm(5.0);
 
             // Group flows if requested
             if let Some(group_by) = &request.group_by {
@@ -217,29 +232,24 @@ impl ReportGenerator {
 
                     // Add flows in this group
                     for flow in group_flows {
-                        let flow_text = format!("{} - ${:.2} - {}", 
-                            flow.date.format("%B %d, %Y"),
-                            flow.amount,
-                            flow.description
-                        );
-                        layer.use_text(&flow_text, 12.0, Mm(20.0), y_pos, &body_font);
+                        layer.use_text(&flow.date.format("%B %d, %Y").to_string(), 12.0, Mm(20.0), y_pos, &body_font);
+                        layer.use_text(&format!("${:.2}", flow.amount), 12.0, Mm(80.0), y_pos, &body_font);
+                        layer.use_text(&flow.description, 12.0, Mm(140.0), y_pos, &body_font);
                         y_pos -= Mm(8.0);
                     }
 
                     // Add group total
                     let group_total: f64 = group_flows.iter().map(|f| f.amount).sum();
-                    layer.use_text(&format!("Group Total: ${:.2}", group_total), 12.0, Mm(20.0), y_pos, &body_font);
+                    layer.use_text("Group Total:", 12.0, Mm(20.0), y_pos, &body_font);
+                    layer.use_text(&format!("${:.2}", group_total), 12.0, Mm(80.0), y_pos, &body_font);
                     y_pos -= Mm(15.0);
                 }
             } else {
                 // Add all flows without grouping
                 for flow in flows {
-                    let flow_text = format!("{} - ${:.2} - {}", 
-                        flow.date.format("%B %d, %Y"),
-                        flow.amount,
-                        flow.description
-                    );
-                    layer.use_text(&flow_text, 12.0, Mm(20.0), y_pos, &body_font);
+                    layer.use_text(&flow.date.format("%B %d, %Y").to_string(), 12.0, Mm(20.0), y_pos, &body_font);
+                    layer.use_text(&format!("${:.2}", flow.amount), 12.0, Mm(80.0), y_pos, &body_font);
+                    layer.use_text(&flow.description, 12.0, Mm(140.0), y_pos, &body_font);
                     y_pos -= Mm(8.0);
                 }
             }
@@ -267,7 +277,11 @@ impl ReportGenerator {
         for (category_id, total) in &category_totals {
             overall_total += total;
             
-            layer.use_text(&format!("{}: ${:.2}", category_id, total), 
+            let category_name = self.categories.get(category_id)
+                .map(|name| name.as_str())
+                .unwrap_or(category_id);
+            
+            layer.use_text(&format!("{}: ${:.2}", category_name, total), 
                 14.0, Mm(20.0), y_pos, &body_font);
             y_pos -= Mm(15.0);
         }

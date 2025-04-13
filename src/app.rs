@@ -172,7 +172,12 @@ impl PreftApp {
     }
 
     pub fn generate_report(&self) -> Result<Vec<u8>, Box<dyn std::error::Error>> {
-        let generator = ReportGenerator::new(self.flows.clone());
+        let generator = ReportGenerator::new(
+            self.flows.clone(),
+            self.categories.iter()
+                .map(|cat| (cat.id.clone(), cat.name.clone()))
+                .collect()
+        );
         generator.generate_report(&self.report_request)
     }
 
@@ -375,7 +380,12 @@ impl eframe::App for PreftApp {
 
                         // Generate button
                         if ui.button("Generate Report").clicked() {
-                            let generator = ReportGenerator::new(flows);
+                            let generator = ReportGenerator::new(
+                                flows,
+                                self.categories.iter()
+                                    .map(|cat| (cat.id.clone(), cat.name.clone()))
+                                    .collect()
+                            );
                             if let Ok(data) = generator.generate_report(&report_request) {
                                 pdf_data = Some(data);
                                 should_close = true;
