@@ -1,5 +1,5 @@
 use eframe::egui;
-use crate::models::{Flow, Category};
+use crate::models::{Flow, Category, FieldType};
 use crate::app::PreftApp;
 
 pub struct FlowEditorState {
@@ -83,7 +83,7 @@ impl FlowEditor {
                     // Basic flow information
                     ui.horizontal(|ui| {
                         ui.label("Date:");
-                        let response = ui.add(
+                        let _response = ui.add(
                             egui::TextEdit::singleline(&mut self.date_input)
                                 .hint_text("YYYY-MM-DD")
                                 .desired_width(100.0)
@@ -237,18 +237,161 @@ pub fn show_main_panel(ui: &mut egui::Ui, app: &mut PreftApp) {
         }
     });
 
-    // Category selector
-    egui::ComboBox::from_label("Select Category")
-        .selected_text(app.selected_category.as_deref().unwrap_or("Select a category"))
-        .show_ui(ui, |ui| {
-            for category in &app.categories {
-                ui.selectable_value(
-                    &mut app.selected_category,
-                    Some(category.id.clone()),
-                    &category.name,
-                );
+    // Show category editor if needed
+    if app.show_category_editor {
+        // Initialize new category if needed
+        if app.new_category.is_none() {
+            app.new_category = Some(Category::new("New Category".to_string()));
+        }
+
+        // Take the category out of the Option to avoid borrowing issues
+        if let Some(mut category) = app.new_category.take() {
+            let mut should_save = false;
+            let mut should_cancel = false;
+
+            egui::Window::new("Add Category")
+                .collapsible(false)
+                .resizable(false)
+                .show(ui.ctx(), |ui| {
+                    ui.vertical(|ui| {
+                        ui.heading("New Category");
+                        
+                        // Category name
+                        ui.horizontal(|ui| {
+                            ui.label("Name:");
+                            if ui.text_edit_singleline(&mut category.name).changed() {
+                                // Name is updated directly in the category
+                            }
+                        });
+
+                        // Tax deduction settings
+                        ui.horizontal(|ui| {
+                            ui.label("Allow Tax Deduction:");
+                            if ui.checkbox(&mut category.tax_deduction.deduction_allowed, "").changed() {
+                                // Tax deduction setting is updated directly
+                            }
+                        });
+
+                        // Default tax deduction value
+                        ui.horizontal(|ui| {
+                            ui.label("Default Tax Deductible:");
+                            if ui.checkbox(&mut category.tax_deduction.default_value, "").changed() {
+                                // Default deductible value is updated directly
+                            }
+                        });
+
+                        ui.separator();
+
+                        // Add field button
+                        if ui.button("Add Field").clicked() {
+                            // TODO: Add field to category
+                        }
+
+                        ui.separator();
+
+                        // Save/Cancel buttons
+                        ui.horizontal(|ui| {
+                            if ui.button("Save").clicked() {
+                                should_save = true;
+                            }
+                            if ui.button("Cancel").clicked() {
+                                should_cancel = true;
+                            }
+                        });
+                    });
+                });
+
+            // Handle save/cancel after the window is closed
+            if should_save {
+                app.categories.push(category);
+                app.db.save_category(&app.categories.last().unwrap()).expect("Failed to save category");
+                app.show_category_editor = false;
+            } else if should_cancel {
+                app.show_category_editor = false;
+            } else {
+                // Put the category back if neither save nor cancel was clicked
+                app.new_category = Some(category);
             }
-        });
+        }
+    }
+
+    // Category selector with hide controls
+    ui.horizontal(|ui| {
+        egui::ComboBox::from_label("Select Category")
+            .selected_text(app.selected_category.as_deref().unwrap_or("Select a category"))
+            .show_ui(ui, |ui| {
+                for category in &app.categories {
+                    if !app.is_category_hidden(&category.id) {
+                        ui.selectable_value(
+                            &mut app.selected_category,
+                            Some(category.id.clone()),
+                            &category.name,
+                        );
+                    }
+                }
+            });
+
+        // Hide category button (only shown when a category is selected)
+        if let Some(category_id) = &app.selected_category {
+            if ui.button("Hide Category").clicked() {
+                app.hide_category_confirmation = Some(category_id.clone());
+            }
+        }
+
+        // Show confirmation dialog if needed
+        if let Some(category_id) = app.hide_category_confirmation.clone() {
+            egui::Window::new("Confirm Hide Category")
+                .collapsible(false)
+                .resizable(false)
+                .show(ui.ctx(), |ui| {
+                    ui.label("Are you sure you want to hide this category?");
+                    ui.label("This will not delete any data - you can show the category again later.");
+                    ui.label("All flows in this category will remain in the database.");
+                    
+                    ui.horizontal(|ui| {
+                        if ui.button("Yes, Hide Category").clicked() {
+                            app.toggle_category_visibility(category_id);
+                            app.hide_category_confirmation = None;
+                        }
+                        if ui.button("Cancel").clicked() {
+                            app.hide_category_confirmation = None;
+                        }
+                    });
+                });
+        }
+
+        // Show hidden categories button
+        if ui.button("Show Hidden Categories").clicked() {
+            app.show_hidden_categories = !app.show_hidden_categories;
+        }
+    });
+
+    // Show hidden categories management if enabled
+    if app.show_hidden_categories {
+        ui.separator();
+        ui.heading("Hidden Categories");
+        egui::Grid::new("hidden_categories_grid")
+            .striped(true)
+            .show(ui, |ui| {
+                // Collect category IDs first to avoid borrow issues
+                let hidden_category_ids: Vec<String> = app.categories
+                    .iter()
+                    .filter(|c| app.is_category_hidden(&c.id))
+                    .map(|c| c.id.clone())
+                    .collect();
+
+                for category_id in hidden_category_ids {
+                    // Find the category name
+                    if let Some(category) = app.categories.iter().find(|c| c.id == category_id) {
+                        ui.label(&category.name);
+                        if ui.button("Show").clicked() {
+                            app.toggle_category_visibility(category_id);
+                        }
+                        ui.end_row();
+                    }
+                }
+            });
+    }
 
     // Show flows for selected category
     if let Some(category) = app.get_selected_category().cloned() {

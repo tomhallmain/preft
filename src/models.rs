@@ -1,6 +1,7 @@
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use chrono::NaiveDate;
+use uuid::Uuid;
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub enum FlowType {
@@ -31,6 +32,22 @@ pub struct Category {
     pub parent_id: Option<String>,
     pub fields: Vec<CategoryField>,
     pub tax_deduction: TaxDeductionInfo,
+}
+
+impl Category {
+    pub fn new(name: String) -> Self {
+        Self {
+            id: Uuid::new_v4().to_string(),
+            name,
+            flow_type: FlowType::Income,
+            parent_id: None,
+            fields: Vec::new(),
+            tax_deduction: TaxDeductionInfo {
+                deduction_allowed: false,
+                default_value: false,
+            },
+        }
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]

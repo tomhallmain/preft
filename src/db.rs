@@ -2,6 +2,7 @@ use anyhow::Result;
 use rusqlite::{Connection, params, types::FromSql, types::ValueRef, types::FromSqlError, types::Type};
 use chrono::NaiveDate;
 use crate::models::{Flow, Category, FlowType, TaxDeductionInfo, get_default_categories};
+use crate::settings::UserSettings;
 
 pub struct Database {
     conn: Connection,
@@ -31,6 +32,12 @@ impl Database {
             for category in get_default_categories() {
                 db.save_category(&category)?;
             }
+        }
+
+        // Initialize user settings if they don't exist
+        let settings_count: i64 = db.conn.query_row("SELECT COUNT(*) FROM user_settings", [], |row| row.get(0))?;
+        if settings_count == 0 {
+            db.save_user_settings(&UserSettings::new())?;
         }
         
         Ok(db)
@@ -65,7 +72,38 @@ impl Database {
             [],
         )?;
 
+        self.conn.execute(
+            "CREATE TABLE IF NOT EXISTS user_settings (
+                id INTEGER PRIMARY KEY,
+                settings_json TEXT NOT NULL
+            )",
+            [],
+        )?;
+
         Ok(())
+    }
+
+    pub fn save_user_settings(&self, settings: &UserSettings) -> Result<()> {
+        let settings_json = serde_json::to_string(settings)?;
+        
+        self.conn.execute(
+            "INSERT OR REPLACE INTO user_settings (id, settings_json)
+             VALUES (1, ?1)",
+            params![settings_json],
+        )?;
+
+        Ok(())
+    }
+
+    pub fn load_user_settings(&self) -> Result<UserSettings> {
+        let settings_json: String = self.conn.query_row(
+            "SELECT settings_json FROM user_settings WHERE id = 1",
+            [],
+            |row| row.get(0),
+        )?;
+
+        let settings = serde_json::from_str(&settings_json)?;
+        Ok(settings)
     }
 
     pub fn save_category(&self, category: &Category) -> Result<()> {

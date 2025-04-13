@@ -2,6 +2,7 @@ mod models;
 mod db;
 mod app;
 mod ui;
+mod settings;
 
 use eframe::egui;
 use anyhow::Result;

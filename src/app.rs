@@ -5,17 +5,22 @@ use uuid::Uuid;
 use crate::models::{Flow, Category, get_default_categories};
 use crate::ui::{show_main_panel, FlowEditorState};
 use crate::db::Database;
+use crate::settings::UserSettings;
 
 pub struct PreftApp {
     pub categories: Vec<Category>,
     pub flows: Vec<Flow>,
     pub selected_category: Option<String>,
     pub show_category_editor: bool,
+    pub show_hidden_categories: bool,
     pub new_flow: Option<Flow>,
     pub editing_flow: Option<Flow>,
     pub custom_field_values: HashMap<String, String>,
+    pub user_settings: UserSettings,
     flow_editor_state: FlowEditorState,
-    db: Database,
+    pub db: Database,
+    pub hide_category_confirmation: Option<String>,  // Track which category is being confirmed for hiding
+    pub new_category: Option<Category>,  // Track the category being created
 }
 
 impl PreftApp {
@@ -29,18 +34,36 @@ impl PreftApp {
             
         // Load flows from database
         let flows = db.load_flows().unwrap_or_default();
+
+        // Load user settings
+        let user_settings = db.load_user_settings().unwrap_or_default();
         
         Self {
             categories,
             flows,
             selected_category: None,
             show_category_editor: false,
+            show_hidden_categories: false,
             new_flow: None,
             editing_flow: None,
             custom_field_values: HashMap::new(),
+            user_settings,
             flow_editor_state: FlowEditorState::new(),
             db,
+            hide_category_confirmation: None,
+            new_category: None,  // Initialize as None
         }
+    }
+
+    pub fn toggle_category_visibility(&mut self, category_id: String) {
+        self.user_settings.toggle_category_visibility(category_id);
+        if let Err(e) = self.db.save_user_settings(&self.user_settings) {
+            eprintln!("Failed to save user settings: {}", e);
+        }
+    }
+
+    pub fn is_category_hidden(&self, category_id: &str) -> bool {
+        self.user_settings.is_category_hidden(category_id)
     }
 
     pub fn create_new_flow(&mut self, category: &Category) {
