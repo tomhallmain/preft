@@ -318,7 +318,13 @@ pub fn show_main_panel(ui: &mut egui::Ui, app: &mut PreftApp) {
     // Category selector with hide controls
     ui.horizontal(|ui| {
         egui::ComboBox::from_label("Select Category")
-            .selected_text(app.selected_category.as_deref().unwrap_or("Select a category"))
+            .selected_text(
+                app.selected_category
+                    .as_ref()
+                    .and_then(|id| app.categories.iter().find(|c| c.id == *id))
+                    .map(|c| c.name.clone())
+                    .unwrap_or_else(|| "Select a category".to_string())
+            )
             .show_ui(ui, |ui| {
                 for category in &app.categories {
                     if !app.is_category_hidden(&category.id) {
