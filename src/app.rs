@@ -2,7 +2,7 @@ use eframe::egui;
 use std::collections::HashMap;
 use uuid::Uuid;
 
-use crate::models::{Flow, Category, get_default_categories};
+use crate::models::{Flow, Category, CategoryField, get_default_categories};
 use crate::ui::{show_main_panel, FlowEditorState};
 use crate::db::Database;
 use crate::settings::UserSettings;
@@ -20,7 +20,9 @@ pub struct PreftApp {
     flow_editor_state: FlowEditorState,
     pub db: Database,
     pub hide_category_confirmation: Option<String>,  // Track which category is being confirmed for hiding
-    pub new_category: Option<Category>,  // Track the category being created
+    pub new_category: Option<Category>,  // This will now track all fields being added
+    pub show_field_editor: bool,  // Track if field editor is open
+    pub editing_field: Option<CategoryField>,  // Track the field being edited
 }
 
 impl PreftApp {
@@ -52,6 +54,8 @@ impl PreftApp {
             db,
             hide_category_confirmation: None,
             new_category: None,  // Initialize as None
+            show_field_editor: false,
+            editing_field: None,
         }
     }
 
@@ -88,7 +92,12 @@ impl PreftApp {
         }
     }
 
-    pub fn save_flow(&mut self, flow_data: Flow) {
+    pub fn save_flow(&mut self, mut flow_data: Flow) {
+        // Copy all custom field values to the flow's custom_fields
+        for (name, value) in &self.custom_field_values {
+            flow_data.custom_fields.insert(name.clone(), value.clone());
+        }
+
         // Save to database
         if let Err(e) = self.db.save_flow(&flow_data) {
             eprintln!("Failed to save flow: {}", e);

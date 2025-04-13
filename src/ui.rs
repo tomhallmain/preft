@@ -1,5 +1,5 @@
 use eframe::egui;
-use crate::models::{Flow, Category, FieldType};
+use crate::models::{Flow, Category, CategoryField, FieldType};
 use crate::app::PreftApp;
 
 pub struct FlowEditorState {
@@ -282,9 +282,115 @@ pub fn show_main_panel(ui: &mut egui::Ui, app: &mut PreftApp) {
 
                         ui.separator();
 
+                        // Show existing fields
+                        if !category.fields.is_empty() {
+                            ui.heading("Fields");
+                            egui::Grid::new("fields_grid")
+                                .striped(true)
+                                .show(ui, |ui| {
+                                    for field in &category.fields {
+                                        ui.label(&field.name);
+                                        ui.label(format!("{:?}", field.field_type));
+                                        if let Some(default) = &field.default_value {
+                                            ui.label(default);
+                                        } else {
+                                            ui.label("No default");
+                                        }
+                                        if ui.button("Edit").clicked() {
+                                            app.editing_field = Some(field.clone());
+                                            app.show_field_editor = true;
+                                        }
+                                        ui.end_row();
+                                    }
+                                });
+                        }
+
                         // Add field button
                         if ui.button("Add Field").clicked() {
-                            // TODO: Add field to category
+                            app.editing_field = Some(CategoryField {
+                                name: String::new(),
+                                field_type: FieldType::Text,
+                                required: false,
+                                default_value: None,
+                            });
+                            app.show_field_editor = true;
+                        }
+
+                        ui.separator();
+
+                        // Show field editor if needed
+                        if app.show_field_editor {
+                            if let Some(mut field) = app.editing_field.take() {
+                                let mut should_save = false;
+                                let mut should_cancel = false;
+
+                                egui::Window::new("Edit Field")
+                                    .collapsible(false)
+                                    .resizable(false)
+                                    .show(ui.ctx(), |ui| {
+                                        ui.vertical(|ui| {
+                                            ui.heading(if field.name.is_empty() { "New Field" } else { "Edit Field" });
+                                            
+                                            // Field name
+                                            ui.horizontal(|ui| {
+                                                ui.label("Name:");
+                                                if ui.text_edit_singleline(&mut field.name).changed() {
+                                                    // Name is updated directly in the field
+                                                }
+                                            });
+
+                                            // Field type
+                                            ui.horizontal(|ui| {
+                                                ui.label("Type:");
+                                                let mut field_type = field.field_type.clone();
+                                                egui::ComboBox::from_label("")
+                                                    .selected_text(format!("{:?}", field_type))
+                                                    .show_ui(ui, |ui| {
+                                                        ui.selectable_value(&mut field_type, FieldType::Text, "Text");
+                                                        ui.selectable_value(&mut field_type, FieldType::Number, "Number");
+                                                        ui.selectable_value(&mut field_type, FieldType::Boolean, "Boolean");
+                                                        ui.selectable_value(&mut field_type, FieldType::Date, "Date");
+                                                    });
+                                                field.field_type = field_type;
+                                            });
+
+                                            // Default value
+                                            ui.horizontal(|ui| {
+                                                ui.label("Default Value:");
+                                                let mut default_value = field.default_value.clone().unwrap_or_default();
+                                                if ui.text_edit_singleline(&mut default_value).changed() {
+                                                    field.default_value = Some(default_value);
+                                                }
+                                            });
+
+                                            ui.separator();
+
+                                            // Save/Cancel buttons
+                                            ui.horizontal(|ui| {
+                                                if ui.button("Save").clicked() {
+                                                    should_save = true;
+                                                }
+                                                if ui.button("Cancel").clicked() {
+                                                    should_cancel = true;
+                                                }
+                                            });
+                                        });
+                                    });
+
+                                // Handle save/cancel after the window is closed
+                                if should_save {
+                                    // If this is a new field, add it to the category
+                                    if !field.name.is_empty() {
+                                        category.fields.push(field);
+                                    }
+                                    app.show_field_editor = false;
+                                } else if should_cancel {
+                                    app.show_field_editor = false;
+                                } else {
+                                    // Put the field back if neither save nor cancel was clicked
+                                    app.editing_field = Some(field);
+                                }
+                            }
                         }
 
                         ui.separator();
