@@ -554,6 +554,7 @@ fn show_category_flows(ui: &mut egui::Ui, app: &mut PreftApp, category: &Categor
         app.create_new_flow(category);
     }
 
+    // TODO Remove the header row from the scroll area once the column widths are fixed
     egui::ScrollArea::vertical()
         .id_source(format!("flows_scroll_{}", category.id))
         .auto_shrink([false, false])

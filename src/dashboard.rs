@@ -1,6 +1,7 @@
 use eframe::egui;
 use chrono::{Local, Datelike};
-use crate::models::{Flow, Category};
+use crate::models::{Flow, Category, FlowType};
+use log::warn;
 
 pub struct Dashboard {
     // Add any state needed for the dashboard here
@@ -25,10 +26,15 @@ impl Dashboard {
 
         for flow in flows {
             if flow.date.year() == current_year {
-                if flow.amount > 0.0 {
-                    total_income += flow.amount;
+                // Find the category for this flow
+                if let Some(category) = categories.iter().find(|c| c.id == flow.category_id) {
+                    match category.flow_type {
+                        FlowType::Income => total_income += flow.amount,
+                        FlowType::Expense => total_expenses += flow.amount,
+                    }
                 } else {
-                    total_expenses += flow.amount.abs();
+                    warn!("Flow {} (date: {}) has no matching category (category_id: {})", 
+                        flow.id, flow.date, flow.category_id);
                 }
             }
         }
