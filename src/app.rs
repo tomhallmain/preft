@@ -149,12 +149,14 @@ impl PreftApp {
                         }
                     }
                 }
+                self.dashboard.mark_for_update();
             }
         } else if self.editing_flow.is_some() {
             if let Some(editing_flow) = self.editing_flow.take() {
                 if let Some(existing_flow) = self.flows.iter_mut()
                     .find(|f| f.id == editing_flow.id) {
                     *existing_flow = flow_data;
+                    self.dashboard.mark_for_update();
                 }
             }
         }
@@ -228,6 +230,7 @@ impl PreftApp {
         if self.selected_category.as_ref() == Some(&category_id) {
             self.selected_category = None;
         }
+        self.dashboard.mark_for_update();
     }
 
     pub fn delete_flow(&mut self, flow_id: &str) -> Result<(), Box<dyn std::error::Error>> {
@@ -236,6 +239,7 @@ impl PreftApp {
 
         // Remove the flow from memory
         self.flows.retain(|f| f.id != flow_id);
+        self.dashboard.mark_for_update();
 
         Ok(())
     }
