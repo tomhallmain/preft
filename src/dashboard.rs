@@ -59,28 +59,33 @@ impl Dashboard {
         recent_flows.sort_by(|a, b| b.date.cmp(&a.date));
         recent_flows.truncate(5); // Show only the 5 most recent transactions
 
-        egui::Grid::new("recent_transactions_grid")
-            .striped(true)
+        egui::ScrollArea::vertical()
+            .id_source("dashboard_recent_transactions")
+            .auto_shrink([false, false])
             .show(ui, |ui| {
-                ui.label("Date");
-                ui.label("Category");
-                ui.label("Amount");
-                ui.label("Description");
-                ui.end_row();
+                egui::Grid::new("recent_transactions_grid")
+                    .striped(true)
+                    .show(ui, |ui| {
+                        ui.label("Date");
+                        ui.label("Category");
+                        ui.label("Amount");
+                        ui.label("Description");
+                        ui.end_row();
 
-                for flow in recent_flows {
-                    let category_name = categories
-                        .iter()
-                        .find(|c| c.id == flow.category_id)
-                        .map(|c| c.name.clone())
-                        .unwrap_or_else(|| "Unknown".to_string());
+                        for flow in recent_flows {
+                            let category_name = categories
+                                .iter()
+                                .find(|c| c.id == flow.category_id)
+                                .map(|c| c.name.clone())
+                                .unwrap_or_else(|| "Unknown".to_string());
 
-                    ui.label(flow.date.format("%Y-%m-%d").to_string());
-                    ui.label(category_name);
-                    ui.label(format!("${:.2}", flow.amount));
-                    ui.label(&flow.description);
-                    ui.end_row();
-                }
+                            ui.label(flow.date.format("%Y-%m-%d").to_string());
+                            ui.label(category_name);
+                            ui.label(format!("${:.2}", flow.amount));
+                            ui.label(&flow.description);
+                            ui.end_row();
+                        }
+                    });
             });
 
         ui.separator();
@@ -98,18 +103,23 @@ impl Dashboard {
         }
         category_totals.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap());
 
-        egui::Grid::new("category_breakdown_grid")
-            .striped(true)
+        egui::ScrollArea::vertical()
+            .id_source("dashboard_category_breakdown")
+            .auto_shrink([false, false])
             .show(ui, |ui| {
-                ui.label("Category");
-                ui.label("Total");
-                ui.end_row();
+                egui::Grid::new("category_breakdown_grid")
+                    .striped(true)
+                    .show(ui, |ui| {
+                        ui.label("Category");
+                        ui.label("Total");
+                        ui.end_row();
 
-                for (name, total) in category_totals {
-                    ui.label(name);
-                    ui.label(format!("${:.2}", total));
-                    ui.end_row();
-                }
+                        for (name, total) in category_totals {
+                            ui.label(name);
+                            ui.label(format!("${:.2}", total));
+                            ui.end_row();
+                        }
+                    });
             });
     }
 } 

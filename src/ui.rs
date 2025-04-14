@@ -554,112 +554,117 @@ fn show_category_flows(ui: &mut egui::Ui, app: &mut PreftApp, category: &Categor
         app.create_new_flow(category);
     }
 
-    egui::Grid::new(format!("flows_grid_{}", category.id))
-        .striped(true)
+    egui::ScrollArea::vertical()
+        .id_source(format!("flows_scroll_{}", category.id))
+        .auto_shrink([false, false])
         .show(ui, |ui| {
-            // Header row
-            ui.label("Date");
-            ui.label("Amount");
-            ui.label("Description");
-            // Show tax_deductible for relevant categories
-            if category.tax_deduction.deduction_allowed {
-                ui.label("Tax Deductible");
-            }
-            for field in &category.fields {
-                ui.label(&field.name);
-            }
-            ui.label(""); // Empty header for edit button column
-            ui.end_row();
+            egui::Grid::new(format!("flows_grid_{}", category.id))
+                .striped(true)
+                .show(ui, |ui| {
+                    // Header row
+                    ui.label("Date");
+                    ui.label("Amount");
+                    ui.label("Description");
+                    // Show tax_deductible for relevant categories
+                    if category.tax_deduction.deduction_allowed {
+                        ui.label("Tax Deductible");
+                    }
+                    for field in &category.fields {
+                        ui.label(&field.name);
+                    }
+                    ui.label(""); // Empty header for edit button column
+                    ui.end_row();
 
-            // Data rows
-            let flows: Vec<_> = app.flows.iter()
-                .filter(|f| f.category_id == category.id)
-                .cloned()
-                .collect();
+                    // Data rows
+                    let flows: Vec<_> = app.flows.iter()
+                        .filter(|f| f.category_id == category.id)
+                        .cloned()
+                        .collect();
 
-            for flow in flows {
-                // Date cell
-                ui.label(flow.date.to_string());
-                
-                // Amount cell
-                ui.label(format!("${:.2}", flow.amount));
-                
-                // Description cell
-                ui.label(&flow.description);
-                
-                // Tax deductible cell
-                if category.tax_deduction.deduction_allowed {
-                    let symbol = match flow.tax_deductible {
-                        Some(true) => "[X]",
-                        Some(false) => "[ ]",
-                        None => "[ ]",
-                    };
-                    ui.label(symbol);
-                }
+                    for flow in flows {
+                        // Date cell
+                        ui.label(flow.date.to_string());
+                        
+                        // Amount cell
+                        ui.label(format!("${:.2}", flow.amount));
+                        
+                        // Description cell
+                        ui.label(&flow.description);
+                        
+                        // Tax deductible cell
+                        if category.tax_deduction.deduction_allowed {
+                            let symbol = match flow.tax_deductible {
+                                Some(true) => "[X]",
+                                Some(false) => "[ ]",
+                                None => "[ ]",
+                            };
+                            ui.label(symbol);
+                        }
 
-                // Custom fields cells
-                for field in &category.fields {
-                    if let Some(value) = flow.custom_fields.get(&field.name) {
-                        match field.field_type {
-                            crate::models::FieldType::Boolean => {
-                                if value.parse::<bool>().unwrap_or(false) {
-                                    ui.label("[X]");
-                                } else {
-                                    ui.label("[ ]");
-                                }
-                            },
-                            crate::models::FieldType::Number => {
-                                if let Ok(num) = value.parse::<f64>() {
-                                    ui.label(format!("${:.2}", num));
-                                } else {
-                                    ui.label(value);
-                                }
-                            },
-                            _ => {
-                                // For text, select, and date fields, capitalize first letter
-                                let mut display_value = value.clone();
-                                if !display_value.is_empty() {
-                                    let mut chars: Vec<char> = display_value.chars().collect();
-                                    if let Some(first) = chars.first_mut() {
-                                        *first = first.to_uppercase().next().unwrap_or(*first);
+                        // Custom fields cells
+                        for field in &category.fields {
+                            if let Some(value) = flow.custom_fields.get(&field.name) {
+                                match field.field_type {
+                                    crate::models::FieldType::Boolean => {
+                                        if value.parse::<bool>().unwrap_or(false) {
+                                            ui.label("[X]");
+                                        } else {
+                                            ui.label("[ ]");
+                                        }
+                                    },
+                                    crate::models::FieldType::Number => {
+                                        if let Ok(num) = value.parse::<f64>() {
+                                            ui.label(format!("${:.2}", num));
+                                        } else {
+                                            ui.label(value);
+                                        }
+                                    },
+                                    _ => {
+                                        // For text, select, and date fields, capitalize first letter
+                                        let mut display_value = value.clone();
+                                        if !display_value.is_empty() {
+                                            let mut chars: Vec<char> = display_value.chars().collect();
+                                            if let Some(first) = chars.first_mut() {
+                                                *first = first.to_uppercase().next().unwrap_or(*first);
+                                            }
+                                            display_value = chars.into_iter().collect();
+                                        }
+                                        ui.label(&display_value);
                                     }
-                                    display_value = chars.into_iter().collect();
                                 }
-                                ui.label(&display_value);
+                            } else {
+                                ui.label("");
                             }
                         }
-                    } else {
-                        ui.label("");
-                    }
-                }
 
-                // Edit button cell - always visible
-                if ui.button("Edit").clicked() {
-                    app.set_editing_flow(flow.clone());
-                    // Initialize custom field values
-                    app.custom_field_values.clear();
-                    for field in &category.fields {
-                        if let Some(value) = flow.custom_fields.get(&field.name) {
-                            app.custom_field_values.insert(field.name.clone(), value.clone());
-                        } else if let Some(default) = &field.default_value {
-                            app.custom_field_values.insert(field.name.clone(), default.clone());
+                        // Edit button cell - always visible
+                        if ui.button("Edit").clicked() {
+                            app.set_editing_flow(flow.clone());
+                            // Initialize custom field values
+                            app.custom_field_values.clear();
+                            for field in &category.fields {
+                                if let Some(value) = flow.custom_fields.get(&field.name) {
+                                    app.custom_field_values.insert(field.name.clone(), value.clone());
+                                } else if let Some(default) = &field.default_value {
+                                    app.custom_field_values.insert(field.name.clone(), default.clone());
+                                }
+                            }
                         }
+
+                        // Add spacing between buttons
+                        ui.label("");
+
+                        // Delete button
+                        if ui.button("Delete").clicked() {
+                            if let Err(e) = app.delete_flow(&flow.id) {
+                                // Show error in UI
+                                ui.label(egui::RichText::new(format!("Error deleting flow: {}", e))
+                                    .color(egui::Color32::RED));
+                            }
+                        }
+
+                        ui.end_row();
                     }
-                }
-
-                // Add spacing between buttons
-                ui.label("");
-
-                // Delete button
-                if ui.button("Delete").clicked() {
-                    if let Err(e) = app.delete_flow(&flow.id) {
-                        // Show error in UI
-                        ui.label(egui::RichText::new(format!("Error deleting flow: {}", e))
-                            .color(egui::Color32::RED));
-                    }
-                }
-
-                ui.end_row();
-            }
+                });
         });
 }
