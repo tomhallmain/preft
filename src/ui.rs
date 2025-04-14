@@ -642,6 +642,18 @@ fn show_category_flows(ui: &mut egui::Ui, app: &mut PreftApp, category: &Categor
                     }
                 }
 
+                // Add spacing between buttons
+                ui.label("");
+
+                // Delete button
+                if ui.button("Delete").clicked() {
+                    if let Err(e) = app.delete_flow(&flow.id) {
+                        // Show error in UI
+                        ui.label(egui::RichText::new(format!("Error deleting flow: {}", e))
+                            .color(egui::Color32::RED));
+                    }
+                }
+
                 ui.end_row();
             }
         });

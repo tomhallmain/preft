@@ -226,6 +226,16 @@ impl PreftApp {
             self.selected_category = None;
         }
     }
+
+    pub fn delete_flow(&mut self, flow_id: &str) -> Result<(), Box<dyn std::error::Error>> {
+        // Remove the flow from the database
+        self.db.delete_flow(flow_id)?;
+
+        // Remove the flow from memory
+        self.flows.retain(|f| f.id != flow_id);
+
+        Ok(())
+    }
 }
 
 impl eframe::App for PreftApp {

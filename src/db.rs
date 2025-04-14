@@ -255,6 +255,16 @@ impl Database {
 
         Ok(())
     }
+
+    pub fn delete_flow(&self, flow_id: &str) -> Result<(), Box<dyn std::error::Error>> {
+        // Delete the flow
+        self.conn.execute(
+            "DELETE FROM flows WHERE id = ?",
+            params![flow_id],
+        )?;
+
+        Ok(())
+    }
 }
 
 impl FromSql for FlowType {
