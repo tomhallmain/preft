@@ -1,6 +1,7 @@
 use eframe::egui;
 use crate::models::{Flow, Category, CategoryField, FieldType};
 use crate::app::PreftApp;
+use chrono::Datelike;
 
 pub struct FlowEditorState {
     pub editor: Option<FlowEditor>,
@@ -549,6 +550,76 @@ pub fn show_main_panel(ui: &mut egui::Ui, app: &mut PreftApp) {
 
 fn show_category_flows(ui: &mut egui::Ui, app: &mut PreftApp, category: &Category) {
     ui.heading(&category.name);
+
+    // Calculate category totals for different time periods
+    let category_flows: Vec<_> = app.flows.iter()
+        .filter(|f| f.category_id == category.id)
+        .collect();
+    
+    let current_date = chrono::Local::now();
+    let current_year = current_date.year();
+    let current_month = current_date.month();
+    
+    let last_year_total: f64 = category_flows.iter()
+        .filter(|f| f.date.year() == current_year - 1)
+        .map(|f| f.amount)
+        .sum();
+    
+    let this_year_total: f64 = category_flows.iter()
+        .filter(|f| f.date.year() == current_year)
+        .map(|f| f.amount)
+        .sum();
+    
+    let current_month_total: f64 = category_flows.iter()
+        .filter(|f| f.date.year() == current_year && f.date.month() == current_month)
+        .map(|f| f.amount)
+        .sum();
+
+    // Calculate year-over-year tracking ratio
+    let yoy_tracking_ratio = if last_year_total != 0.0 {
+        // Calculate the proportion of the year that has passed
+        let current_day = current_date.ordinal() as f64;
+        let days_in_year = if chrono::NaiveDate::from_ymd_opt(current_year, 12, 31).unwrap().leap_year() {
+            366.0
+        } else {
+            365.0
+        };
+        let year_progress = current_day / days_in_year;
+
+        // Calculate what proportion of last year's total we should have by now
+        let expected_this_year = last_year_total * year_progress;
+
+        // Calculate the tracking ratio (actual vs expected)
+        this_year_total / expected_this_year
+    } else {
+        0.0
+    };
+
+    // Display category totals on a single line
+    ui.horizontal(|ui| {
+        ui.with_layout(egui::Layout::left_to_right(egui::Align::Center), |ui| {
+            ui.label("Last Year:");
+            ui.label(format!("${:.2}", last_year_total));
+            ui.add_space(20.0);
+            
+            ui.label("This Year:");
+            ui.label(format!("${:.2}", this_year_total));
+            ui.add_space(20.0);
+            
+            ui.label("Current Month:");
+            ui.label(format!("${:.2}", current_month_total));
+            ui.add_space(20.0);
+
+            ui.label("Year Tracking Ratio:");
+            let change_text = format!("{:.2}", yoy_tracking_ratio);
+            let color = if yoy_tracking_ratio >= 1.0 {
+                egui::Color32::GREEN  // Spending/earning faster than last year, or exactly on track
+            } else {
+                egui::Color32::RED  // Spending/earning slower than last year
+            };
+            ui.label(egui::RichText::new(change_text).color(color));
+        });
+    });
 
     if ui.button("Add Flow").clicked() {
         app.create_new_flow(category);
