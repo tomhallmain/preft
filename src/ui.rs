@@ -1,7 +1,11 @@
 use eframe::egui;
+
+use chrono::Datelike;
+use log::warn;
+
 use crate::models::{Flow, Category, CategoryField, FieldType};
 use crate::app::PreftApp;
-use chrono::Datelike;
+use crate::utils;
 
 pub struct FlowEditorState {
     pub editor: Option<FlowEditor>,
@@ -549,7 +553,8 @@ pub fn show_main_panel(ui: &mut egui::Ui, app: &mut PreftApp) {
 }
 
 fn show_category_flows(ui: &mut egui::Ui, app: &mut PreftApp, category: &Category) {
-    ui.heading(&category.name);
+    ui.heading(format!("{} Flows", category.name));
+    ui.separator();
 
     // Calculate category totals for different time periods
     let category_flows: Vec<_> = app.flows.iter()
@@ -575,26 +580,6 @@ fn show_category_flows(ui: &mut egui::Ui, app: &mut PreftApp, category: &Categor
         .map(|f| f.amount)
         .sum();
 
-    // Calculate year-over-year tracking ratio
-    let yoy_tracking_ratio = if last_year_total != 0.0 {
-        // Calculate the proportion of the year that has passed
-        let current_day = current_date.ordinal() as f64;
-        let days_in_year = if chrono::NaiveDate::from_ymd_opt(current_year, 12, 31).unwrap().leap_year() {
-            366.0
-        } else {
-            365.0
-        };
-        let year_progress = current_day / days_in_year;
-
-        // Calculate what proportion of last year's total we should have by now
-        let expected_this_year = last_year_total * year_progress;
-
-        // Calculate the tracking ratio (actual vs expected)
-        this_year_total / expected_this_year
-    } else {
-        0.0
-    };
-
     // Display category totals on a single line
     ui.horizontal(|ui| {
         ui.with_layout(egui::Layout::left_to_right(egui::Align::Center), |ui| {
@@ -610,14 +595,17 @@ fn show_category_flows(ui: &mut egui::Ui, app: &mut PreftApp, category: &Categor
             ui.label(format!("${:.2}", current_month_total));
             ui.add_space(20.0);
 
-            ui.label("Year Tracking Ratio:");
-            let change_text = format!("{:.2}", yoy_tracking_ratio);
-            let color = if yoy_tracking_ratio >= 1.0 {
-                egui::Color32::GREEN  // Spending/earning faster than last year, or exactly on track
-            } else {
-                egui::Color32::RED  // Spending/earning slower than last year
-            };
-            ui.label(egui::RichText::new(change_text).color(color));
+            // Calculate and display tracking ratio using utils
+            if let Some(ratio) = utils::calculate_tracking_ratio(&app.flows, category) {
+                ui.label("Year Tracking Ratio:");
+                let ratio_text = format!("{:.2}", ratio);
+                let color = if ratio >= 1.0 {
+                    egui::Color32::GREEN  // On track or ahead
+                } else {
+                    egui::Color32::RED  // Behind
+                };
+                ui.label(egui::RichText::new(ratio_text).color(color));
+            }
         });
     });
 
@@ -658,7 +646,9 @@ fn show_category_flows(ui: &mut egui::Ui, app: &mut PreftApp, category: &Categor
                         ui.label(flow.date.to_string());
                         
                         // Amount cell
-                        ui.label(format!("${:.2}", flow.amount));
+                        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                            ui.label(format!("${:.2}", flow.amount));
+                        });
                         
                         // Description cell
                         ui.label(&flow.description);
@@ -685,11 +675,13 @@ fn show_category_flows(ui: &mut egui::Ui, app: &mut PreftApp, category: &Categor
                                         }
                                     },
                                     crate::models::FieldType::Number => {
-                                        if let Ok(num) = value.parse::<f64>() {
-                                            ui.label(format!("${:.2}", num));
-                                        } else {
-                                            ui.label(value);
-                                        }
+                                        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                                            if let Ok(num) = value.parse::<f64>() {
+                                                ui.label(format!("${:.2}", num));
+                                            } else {
+                                                ui.label(value);
+                                            }
+                                        });
                                     },
                                     _ => {
                                         // For text, select, and date fields, capitalize first letter

@@ -1,6 +1,7 @@
 use eframe::egui;
 use chrono::{Local, Datelike};
 use crate::models::{Flow, Category, FlowType};
+use crate::utils;
 use log::warn;
 
 pub struct Dashboard {
@@ -55,6 +56,47 @@ impl Dashboard {
                 ui.label("Net Total:");
                 ui.label(format!("${:.2}", net_total));
                 ui.end_row();
+            });
+
+        ui.separator();
+
+        // Category Tracking Ratios
+        ui.heading("Category Tracking");
+        let mut category_tracking: Vec<(String, f64)> = Vec::new();
+        for category in categories {
+            if let Some(ratio) = utils::calculate_tracking_ratio(flows, category) {
+                category_tracking.push((category.name.clone(), ratio));
+            }
+        }
+
+        // Sort by tracking ratio (lowest first)
+        category_tracking.sort_by(|a, b| a.1.partial_cmp(&b.1).unwrap());
+
+        egui::ScrollArea::vertical()
+            .id_source("dashboard_category_tracking")
+            .auto_shrink([false, false])
+            .show(ui, |ui| {
+                egui::Grid::new("category_tracking_grid")
+                    .striped(true)
+                    .show(ui, |ui| {
+                        ui.label("Category");
+                        ui.label("Tracking Ratio");
+                        ui.end_row();
+
+                        for (name, ratio) in category_tracking {
+                            ui.label(name);
+                            let ratio_text = format!("{:.2}", ratio);
+                            let color = if ratio >= 1.0 {
+                                egui::Color32::GREEN  // On track or ahead
+                            } else {
+                                egui::Color32::RED  // Behind
+                            };
+                            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                                ui.label(egui::RichText::new(ratio_text).color(color));
+                            });
+                            ui.end_row();
+                        }
+                    });
             });
 
         ui.separator();
