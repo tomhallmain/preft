@@ -4,6 +4,7 @@ mod app;
 mod ui;
 mod settings;
 mod reporting;
+mod dashboard;
 
 use eframe::egui;
 use anyhow::Result;
@@ -18,6 +19,6 @@ fn main() -> Result<(), eframe::Error> {
     eframe::run_native(
         "Preft",
         options,
-        Box::new(|_cc| Box::new(app::PreftApp::new())),
+        Box::new(|cc| Box::new(app::PreftApp::new(cc))),
     )
 } 

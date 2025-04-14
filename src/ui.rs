@@ -235,6 +235,9 @@ impl FlowEditor {
 pub fn show_main_panel(ui: &mut egui::Ui, app: &mut PreftApp) {
     ui.horizontal(|ui| {
         ui.heading("Personal Finance Tracker");
+        if ui.button("Show Dashboard").clicked() {
+            app.selected_category = None;
+        }
         if ui.button("Add Category").clicked() {
             app.show_category_editor = true;
         }
@@ -536,9 +539,11 @@ pub fn show_main_panel(ui: &mut egui::Ui, app: &mut PreftApp) {
             });
     }
 
-    // Show flows for selected category
+    // Show flows for selected category or dashboard if no category is selected
     if let Some(category) = app.get_selected_category().cloned() {
         show_category_flows(ui, app, &category);
+    } else {
+        app.dashboard.show(ui, &app.flows, &app.categories);
     }
 }
 

@@ -10,6 +10,7 @@ use crate::ui::{show_main_panel, FlowEditorState};
 use crate::db::Database;
 use crate::settings::UserSettings;
 use crate::reporting::{ReportRequest, ReportGenerator};
+use crate::dashboard::Dashboard;
 
 pub struct PreftApp {
     pub categories: Vec<Category>,
@@ -30,10 +31,11 @@ pub struct PreftApp {
     pub editing_field: Option<CategoryField>,  // Track the field being edited
     pub report_request: ReportRequest,
     pub show_report_dialog: bool,
+    pub dashboard: Dashboard,
 }
 
 impl PreftApp {
-    pub fn new() -> Self {
+    pub fn new(cc: &eframe::CreationContext<'_>) -> Self {
         // Initialize database
         let db = Database::new().expect("Failed to initialize database");
         
@@ -66,6 +68,7 @@ impl PreftApp {
             editing_field: None,
             report_request: ReportRequest::default(),
             show_report_dialog: false,
+            dashboard: Dashboard::new(),
         }
     }
 
