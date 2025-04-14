@@ -24,6 +24,7 @@ pub struct PreftApp {
     flow_editor_state: FlowEditorState,
     pub db: Database,
     pub hide_category_confirmation: Option<String>,  // Track which category is being confirmed for hiding
+    pub delete_category_confirmation: Option<String>,
     pub new_category: Option<Category>,  // This will now track all fields being added
     pub show_field_editor: bool,  // Track if field editor is open
     pub editing_field: Option<CategoryField>,  // Track the field being edited
@@ -59,6 +60,7 @@ impl PreftApp {
             flow_editor_state: FlowEditorState::new(),
             db,
             hide_category_confirmation: None,
+            delete_category_confirmation: None,
             new_category: None,  // Initialize as None
             show_field_editor: false,
             editing_field: None,
@@ -201,6 +203,28 @@ impl PreftApp {
                     }
                 });
         });
+    }
+
+    pub fn delete_category(&mut self, category_id: String) {
+        // Remove the category from the database
+        if let Err(e) = self.db.delete_category(&category_id) {
+            eprintln!("Failed to delete category: {}", e);
+            return;
+        }
+
+        // Remove the category from memory
+        self.categories.retain(|c| c.id != category_id);
+
+        // Remove all flows associated with this category
+        self.flows.retain(|f| f.category_id != category_id);
+        if let Err(e) = self.db.delete_flows_by_category(&category_id) {
+            eprintln!("Failed to delete flows for category: {}", e);
+        }
+
+        // Clear selection if the deleted category was selected
+        if self.selected_category.as_ref() == Some(&category_id) {
+            self.selected_category = None;
+        }
     }
 }
 

@@ -235,6 +235,26 @@ impl Database {
 
         Ok(result)
     }
+
+    pub fn delete_category(&self, category_id: &str) -> Result<(), Box<dyn std::error::Error>> {
+        // Delete the category
+        self.conn.execute(
+            "DELETE FROM categories WHERE id = ?",
+            params![category_id],
+        )?;
+
+        Ok(())
+    }
+
+    pub fn delete_flows_by_category(&self, category_id: &str) -> Result<(), Box<dyn std::error::Error>> {
+        // Delete all flows for this category
+        self.conn.execute(
+            "DELETE FROM flows WHERE category_id = ?",
+            params![category_id],
+        )?;
+
+        Ok(())
+    }
 }
 
 impl FromSql for FlowType {

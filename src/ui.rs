@@ -454,6 +454,9 @@ pub fn show_main_panel(ui: &mut egui::Ui, app: &mut PreftApp) {
             if ui.button("Hide Category").clicked() {
                 app.hide_category_confirmation = Some(category_id.clone());
             }
+            if ui.button("Delete Category").clicked() {
+                app.delete_category_confirmation = Some(category_id.clone());
+            }
         }
 
         // Show confirmation dialog if needed
@@ -473,6 +476,28 @@ pub fn show_main_panel(ui: &mut egui::Ui, app: &mut PreftApp) {
                         }
                         if ui.button("Cancel").clicked() {
                             app.hide_category_confirmation = None;
+                        }
+                    });
+                });
+        }
+
+        // Show delete confirmation dialog if needed
+        if let Some(category_id) = app.delete_category_confirmation.clone() {
+            egui::Window::new("Confirm Delete Category")
+                .collapsible(false)
+                .resizable(false)
+                .show(ui.ctx(), |ui| {
+                    ui.label("Are you sure you want to delete this category?");
+                    ui.label("This will permanently delete the category and all its flows.");
+                    ui.label("This action cannot be undone!");
+                    
+                    ui.horizontal(|ui| {
+                        if ui.button("Yes, Delete Category").clicked() {
+                            app.delete_category(category_id);
+                            app.delete_category_confirmation = None;
+                        }
+                        if ui.button("Cancel").clicked() {
+                            app.delete_category_confirmation = None;
                         }
                     });
                 });
