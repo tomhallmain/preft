@@ -29,7 +29,7 @@ impl CategoryFlowsState {
         self.needs_update = true;
     }
 
-    fn update_totals(&mut self, flows: &[Flow], category: &Category) {
+    pub fn update_totals(&mut self, flows: &[Flow], category: &Category) {
         if !self.needs_update {
             return;
         }
@@ -61,29 +61,15 @@ impl CategoryFlowsState {
 }
 
 pub fn show_category_flows(ui: &mut egui::Ui, app: &mut PreftApp, category: &Category) {
-    // Calculate totals directly
-    let current_date = Local::now();
-    let current_year = current_date.year();
-    let current_month = current_date.month();
-
-    let last_year_total: f64 = app.flows.iter()
-        .filter(|f| f.category_id == category.id && f.date.year() == current_year - 1)
-        .map(|f| f.amount)
-        .sum();
-
-    let this_year_total: f64 = app.flows.iter()
-        .filter(|f| f.category_id == category.id && f.date.year() == current_year)
-        .map(|f| f.amount)
-        .sum();
-
-    let current_month_total: f64 = app.flows.iter()
-        .filter(|f| f.category_id == category.id && 
-                f.date.year() == current_year && 
-                f.date.month() == current_month)
-        .map(|f| f.amount)
-        .sum();
-
-    let tracking_ratio = utils::calculate_tracking_ratio(&app.flows, category);
+    // Get all data we need first
+    let flows = app.flows.clone();
+    let state = app.get_category_flows_state(&category.id);
+    
+    if state.needs_update {
+        state.update_totals(&flows, category);
+        state.tracking_ratio = utils::calculate_tracking_ratio(&flows, category);
+        state.needs_update = false;
+    }
 
     ui.heading(format!("{} Flows", category.name));
     ui.separator();
@@ -92,18 +78,18 @@ pub fn show_category_flows(ui: &mut egui::Ui, app: &mut PreftApp, category: &Cat
     ui.horizontal(|ui| {
         ui.with_layout(egui::Layout::left_to_right(egui::Align::Center), |ui| {
             ui.label("Last Year:");
-            ui.label(format!("${:.2}", last_year_total));
+            ui.label(format!("${:.2}", state.last_year_total));
             ui.add_space(20.0);
             
             ui.label("This Year:");
-            ui.label(format!("${:.2}", this_year_total));
+            ui.label(format!("${:.2}", state.this_year_total));
             ui.add_space(20.0);
 
             ui.label("Current Month:");
-            ui.label(format!("${:.2}", current_month_total));
+            ui.label(format!("${:.2}", state.current_month_total));
             ui.add_space(20.0);
 
-            if let Some(ratio) = tracking_ratio {
+            if let Some(ratio) = state.tracking_ratio {
                 ui.label("Year Tracking Ratio:");
                 let ratio_text = format!("{:.2}", ratio);
                 let color = if ratio >= 1.0 {

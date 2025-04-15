@@ -33,7 +33,7 @@ pub struct PreftApp {
     pub report_request: ReportRequest,
     pub show_report_dialog: bool,
     pub dashboard: Dashboard,
-    category_flows_state: HashMap<String, CategoryFlowsState>,
+    pub category_flows_state: HashMap<String, CategoryFlowsState>,
 }
 
 impl PreftApp {
