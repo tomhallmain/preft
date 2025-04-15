@@ -3,14 +3,15 @@ use std::collections::HashMap;
 use uuid::Uuid;
 use std::fs::File;
 use std::io::Write;
-use chrono::Datelike;
+use chrono::{Datelike, Local};
 
 use crate::models::{Flow, Category, CategoryField, get_default_categories};
 use crate::ui::{show_main_panel, FlowEditorState};
 use crate::db::Database;
 use crate::settings::UserSettings;
 use crate::reporting::{ReportRequest, ReportGenerator};
-use crate::dashboard::Dashboard;
+use crate::ui::dashboard::Dashboard;
+use crate::ui::category_flows::CategoryFlowsState;
 
 pub struct PreftApp {
     pub categories: Vec<Category>,
@@ -32,6 +33,7 @@ pub struct PreftApp {
     pub report_request: ReportRequest,
     pub show_report_dialog: bool,
     pub dashboard: Dashboard,
+    category_flows_state: HashMap<String, CategoryFlowsState>,
 }
 
 impl PreftApp {
@@ -49,6 +51,12 @@ impl PreftApp {
         // Load user settings
         let user_settings = db.load_user_settings().unwrap_or_default();
         
+        // Initialize category flows state for all categories
+        let mut category_flows_state = HashMap::new();
+        for category in &categories {
+            category_flows_state.insert(category.id.clone(), CategoryFlowsState::new());
+        }
+        
         Self {
             categories,
             flows,
@@ -63,12 +71,13 @@ impl PreftApp {
             db,
             hide_category_confirmation: None,
             delete_category_confirmation: None,
-            new_category: None,  // Initialize as None
+            new_category: None,
             show_field_editor: false,
             editing_field: None,
             report_request: ReportRequest::default(),
             show_report_dialog: false,
             dashboard: Dashboard::new(),
+            category_flows_state,
         }
     }
 
@@ -150,6 +159,9 @@ impl PreftApp {
                     }
                 }
                 self.dashboard.mark_for_update();
+                let state = self.category_flows_state.get_mut(&flow_data.category_id)
+                    .expect("Category state should exist");
+                state.mark_for_update();
             }
         } else if self.editing_flow.is_some() {
             if let Some(editing_flow) = self.editing_flow.take() {
@@ -157,6 +169,9 @@ impl PreftApp {
                     .find(|f| f.id == editing_flow.id) {
                     *existing_flow = flow_data;
                     self.dashboard.mark_for_update();
+                    let state = self.category_flows_state.get_mut(&existing_flow.category_id)
+                        .expect("Category state should exist");
+                    state.mark_for_update();
                 }
             }
         }
@@ -231,6 +246,7 @@ impl PreftApp {
             self.selected_category = None;
         }
         self.dashboard.mark_for_update();
+        self.category_flows_state.remove(&category_id);
     }
 
     pub fn delete_flow(&mut self, flow_id: &str) -> Result<(), Box<dyn std::error::Error>> {
@@ -238,10 +254,29 @@ impl PreftApp {
         self.db.delete_flow(flow_id)?;
 
         // Remove the flow from memory
-        self.flows.retain(|f| f.id != flow_id);
-        self.dashboard.mark_for_update();
+        if let Some(pos) = self.flows.iter().position(|f| f.id == flow_id) {
+            let flow = self.flows.remove(pos);
+            self.dashboard.mark_for_update();
+            let state = self.category_flows_state.get_mut(&flow.category_id)
+                .expect("Category state should exist");
+            state.mark_for_update();
+        }
 
         Ok(())
+    }
+
+    pub fn add_category(&mut self, category: Category) {
+        self.categories.push(category.clone());
+        self.category_flows_state.insert(category.id.clone(), CategoryFlowsState::new());
+        if let Err(e) = self.db.save_category(&category) {
+            eprintln!("Failed to save category: {}", e);
+        }
+    }
+
+    pub fn get_category_flows_state(&mut self, category_id: &str) -> &mut CategoryFlowsState {
+        self.category_flows_state
+            .entry(category_id.to_string())
+            .or_insert_with(CategoryFlowsState::new)
     }
 }
 

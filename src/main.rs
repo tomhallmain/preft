@@ -9,7 +9,6 @@ mod app;
 mod ui;
 mod settings;
 mod reporting;
-mod dashboard;
 mod utils;
 
 fn main() -> Result<(), eframe::Error> {
