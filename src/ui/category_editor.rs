@@ -145,7 +145,9 @@ fn show_field_editor(ui: &mut egui::Ui, app: &mut PreftApp, category: &mut Categ
                             .selected_text(format!("{:?}", field_type))
                             .show_ui(ui, |ui| {
                                 ui.selectable_value(&mut field_type, FieldType::Text, "Text");
-                                ui.selectable_value(&mut field_type, FieldType::Number, "Number");
+                                ui.selectable_value(&mut field_type, FieldType::Integer, "Whole Number");
+                                ui.selectable_value(&mut field_type, FieldType::Float, "Decimal Number");
+                                ui.selectable_value(&mut field_type, FieldType::Currency, "Currency");
                                 ui.selectable_value(&mut field_type, FieldType::Boolean, "Boolean");
                                 ui.selectable_value(&mut field_type, FieldType::Date, "Date");
                             });

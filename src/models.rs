@@ -61,7 +61,11 @@ pub struct CategoryField {
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub enum FieldType {
     Text,
+    #[deprecated(note = "Use Integer or Float instead. Kept for migration purposes only.")]
     Number,
+    Integer,
+    Float,
+    Currency,
     Date,
     Boolean,
     Select(Vec<String>),
@@ -144,7 +148,7 @@ pub fn get_default_categories() -> Vec<Category> {
                 },
                 CategoryField {
                     name: "tax_year".to_string(),
-                    field_type: FieldType::Number,
+                    field_type: FieldType::Integer,
                     required: true,
                     default_value: None,
                 },

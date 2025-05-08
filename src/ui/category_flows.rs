@@ -172,10 +172,28 @@ fn show_flows_table(ui: &mut egui::Ui, app: &mut PreftApp, category: &Category) 
                                             ui.label("[ ]");
                                         }
                                     },
-                                    crate::models::FieldType::Number => {
+                                    crate::models::FieldType::Currency => {
+                                        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                                            if let Ok(num) = value.replace(['$', ','], "").parse::<f64>() {
+                                                ui.label(format!("${:.2}", num));
+                                            } else {
+                                                ui.label(value);
+                                            }
+                                        });
+                                    },
+                                    crate::models::FieldType::Integer => {
+                                        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                                            if let Ok(num) = value.parse::<i64>() {
+                                                ui.label(num.to_string());
+                                            } else {
+                                                ui.label(value);
+                                            }
+                                        });
+                                    },
+                                    crate::models::FieldType::Float => {
                                         ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                                             if let Ok(num) = value.parse::<f64>() {
-                                                ui.label(format!("${:.2}", num));
+                                                ui.label(format!("{:.2}", num));
                                             } else {
                                                 ui.label(value);
                                             }

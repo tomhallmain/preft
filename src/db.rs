@@ -3,6 +3,7 @@ use rusqlite::{Connection, params, types::FromSql, types::ValueRef, types::FromS
 use chrono::NaiveDate;
 use crate::models::{Flow, Category, FlowType, TaxDeductionInfo, get_default_categories};
 use crate::settings::UserSettings;
+mod migrations;
 
 pub struct Database {
     conn: Connection,
@@ -23,8 +24,11 @@ impl Database {
         let conn = Connection::open(db_path)?;
         
         // Initialize the database
-        let db = Database { conn };
+        let mut db = Database { conn };
         db.initialize()?;
+        
+        // Run migrations
+        migrations::run_migrations(&mut db.conn)?;
         
         // Check if we have any categories, if not, save the defaults
         let count: i64 = db.conn.query_row("SELECT COUNT(*) FROM categories", [], |row| row.get(0))?;

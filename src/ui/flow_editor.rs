@@ -161,11 +161,17 @@ impl FlowEditor {
                                         self.flow_data.custom_fields.insert(field.name.clone(), value.clone());
                                     }
                                 },
-                                crate::models::FieldType::Number => {
+                                crate::models::FieldType::Currency => {
                                     let value = app.custom_field_values
                                         .entry(field.name.clone())
                                         .or_insert_with(String::new);
-                                    if ui.text_edit_singleline(value).changed() {
+                                    // Remove any currency symbols and commas before parsing
+                                    let clean_value = value.replace(['$', ','], "");
+                                    if ui.text_edit_singleline(&mut value.clone()).changed() {
+                                        // Format the value as currency when displaying
+                                        if let Ok(num) = clean_value.parse::<f64>() {
+                                            *value = format!("${:.2}", num);
+                                        }
                                         self.flow_data.custom_fields.insert(field.name.clone(), value.clone());
                                     }
                                 },
@@ -204,6 +210,43 @@ impl FlowEditor {
                                         .or_insert_with(String::new);
                                     if ui.text_edit_singleline(value).changed() {
                                         self.flow_data.custom_fields.insert(field.name.clone(), value.clone());
+                                    }
+                                },
+                                crate::models::FieldType::Integer => {
+                                    let value = app.custom_field_values
+                                        .entry(field.name.clone())
+                                        .or_insert_with(String::new);
+                                    if ui.text_edit_singleline(value).changed() {
+                                        // Validate that the input is a valid integer
+                                        if let Ok(num) = value.parse::<i64>() {
+                                            *value = num.to_string();
+                                            self.flow_data.custom_fields.insert(field.name.clone(), value.clone());
+                                        }
+                                    }
+                                },
+                                crate::models::FieldType::Float => {
+                                    let value = app.custom_field_values
+                                        .entry(field.name.clone())
+                                        .or_insert_with(String::new);
+                                    if ui.text_edit_singleline(value).changed() {
+                                        // Validate that the input is a valid float
+                                        if let Ok(num) = value.parse::<f64>() {
+                                            *value = format!("{:.2}", num);
+                                            self.flow_data.custom_fields.insert(field.name.clone(), value.clone());
+                                        }
+                                    }
+                                },
+                                #[allow(deprecated)]
+                                crate::models::FieldType::Number => {
+                                    let value = app.custom_field_values
+                                        .entry(field.name.clone())
+                                        .or_insert_with(String::new);
+                                    if ui.text_edit_singleline(value).changed() {
+                                        // Handle Number type the same way as Float since we're migrating to Float
+                                        if let Ok(num) = value.parse::<f64>() {
+                                            *value = format!("{:.2}", num);
+                                            self.flow_data.custom_fields.insert(field.name.clone(), value.clone());
+                                        }
                                     }
                                 },
                             }
