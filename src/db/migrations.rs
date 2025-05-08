@@ -2,7 +2,8 @@ use anyhow::Result;
 use rusqlite::{Connection, params};
 use serde_json::Value;
 use log::{info, warn, error};
-use crate::models::{Category, FieldType, CategoryField, FlowType, TaxDeductionInfo};
+use crate::models::{Category, FieldType, CategoryField, FlowType, TaxDeductionInfo, Flow};
+use std::collections::HashMap;
 
 pub fn run_migrations(conn: &mut Connection) -> Result<()> {
     info!("Starting database migrations...");
@@ -181,4 +182,251 @@ fn validate_migration(conn: &Connection) -> Result<bool> {
 
     info!("Migration validation successful");
     Ok(true)
+}
+
+/// Compares two category field schemas to determine if a migration is needed
+pub fn has_schema_changes(old_category: &Category, new_category: &Category) -> bool {
+    info!("Comparing schemas for category '{}':", new_category.name);
+    info!("Old category fields: {:?}", old_category.fields);
+    info!("New category fields: {:?}", new_category.fields);
+
+    // Create maps of field names to their types for easy comparison
+    let old_fields: HashMap<&str, &FieldType> = old_category.fields
+        .iter()
+        .map(|f| (f.name.as_str(), &f.field_type))
+        .collect();
+    
+    let new_fields: HashMap<&str, &FieldType> = new_category.fields
+        .iter()
+        .map(|f| (f.name.as_str(), &f.field_type))
+        .collect();
+
+    info!("Old field types: {:?}", old_fields);
+    info!("New field types: {:?}", new_fields);
+
+    let mut has_changes = false;
+    let mut changes = Vec::new();
+
+    // Check for removed fields
+    for field_name in old_fields.keys() {
+        if !new_fields.contains_key(field_name) {
+            changes.push(format!("Field '{}' was removed", field_name));
+            has_changes = true;
+            info!("Field '{}' exists in old schema but not in new", field_name);
+        }
+    }
+
+    // Check for added fields
+    for field_name in new_fields.keys() {
+        if !old_fields.contains_key(field_name) {
+            changes.push(format!("Field '{}' was added", field_name));
+            has_changes = true;
+            info!("Field '{}' exists in new schema but not in old", field_name);
+        }
+    }
+
+    // Check for type changes
+    for (field_name, new_type) in &new_fields {
+        if let Some(old_type) = old_fields.get(field_name) {
+            if old_type != new_type {
+                changes.push(format!("Field '{}' type changed from {:?} to {:?}", 
+                    field_name, old_type, new_type));
+                has_changes = true;
+                info!("Field '{}' type changed: {:?} -> {:?}", field_name, old_type, new_type);
+            } else {
+                info!("Field '{}' type unchanged: {:?}", field_name, old_type);
+            }
+        }
+    }
+
+    if has_changes {
+        info!("Schema changes detected for category '{}':", new_category.name);
+        for change in changes {
+            info!("- {}", change);
+        }
+    } else {
+        info!("No schema changes detected for category '{}'", new_category.name);
+    }
+
+    has_changes
+}
+
+/// Migrates flows to match a new category structure
+pub fn migrate_flows_to_new_category(conn: &Connection, old_category: &Category, new_category: &Category) -> Result<()> {
+    // Check if we actually need to migrate
+    if !has_schema_changes(old_category, new_category) {
+        info!("No schema changes detected for category '{}', skipping flow migration", new_category.name);
+        return Ok(());
+    }
+
+    info!("Starting flow migration for category '{}'", new_category.name);
+    
+    // Get all flows for this category
+    let mut stmt = conn.prepare(
+        "SELECT id, custom_fields FROM flows WHERE category_id = ?"
+    )?;
+    
+    let flows = stmt.query_map(params![new_category.id], |row| {
+        let id: String = row.get(0)?;
+        let custom_fields_json: String = row.get(1)?;
+        let custom_fields: HashMap<String, String> = serde_json::from_str(&custom_fields_json)
+            .map_err(|e| rusqlite::Error::InvalidParameterName(e.to_string()))?;
+        Ok((id, custom_fields))
+    })?;
+
+    let mut total_flows = 0;
+    let mut migrated_flows = 0;
+    let mut skipped_fields = 0;
+
+    // Create a map of old field names to new field types
+    let field_type_map: HashMap<String, FieldType> = new_category.fields
+        .iter()
+        .map(|f| (f.name.clone(), f.field_type.clone()))
+        .collect();
+
+    // Process each flow
+    for flow_result in flows {
+        total_flows += 1;
+        let (flow_id, mut custom_fields) = flow_result?;
+        let mut modified = false;
+
+        // Check each field in the flow
+        let fields_to_remove: Vec<String> = custom_fields.keys()
+            .filter(|field_name| !field_type_map.contains_key(*field_name))
+            .cloned()
+            .collect();
+
+        // Remove fields that no longer exist in the category
+        for field_name in fields_to_remove {
+            custom_fields.remove(&field_name);
+            modified = true;
+            skipped_fields += 1;
+            info!("Removed field '{}' from flow {}", field_name, flow_id);
+        }
+
+        // Validate and convert field values based on new types
+        for (field_name, field_type) in &field_type_map {
+            if let Some(value) = custom_fields.get(field_name) {
+                // Skip empty values
+                if value.trim().is_empty() {
+                    continue;
+                }
+
+                // Clone the value to avoid borrow checker issues
+                let value = value.clone();
+
+                match field_type {
+                    FieldType::Integer => {
+                        if let Ok(_) = value.parse::<i64>() {
+                            // Value is already valid
+                        } else if let Ok(float_val) = value.parse::<f64>() {
+                            // Convert float to integer
+                            custom_fields.insert(field_name.clone(), (float_val as i64).to_string());
+                            modified = true;
+                            info!("Converted field '{}' to integer in flow {}", field_name, flow_id);
+                        } else {
+                            // Invalid value, remove it
+                            custom_fields.remove(field_name);
+                            modified = true;
+                            skipped_fields += 1;
+                            warn!("Invalid integer value '{}' for field '{}' in category '{}'", 
+                                value, field_name, new_category.name);
+                        }
+                    },
+                    FieldType::Float => {
+                        if let Ok(_) = value.parse::<f64>() {
+                            // Value is already valid
+                        } else if let Ok(int_val) = value.parse::<i64>() {
+                            // Convert integer to float
+                            custom_fields.insert(field_name.clone(), (int_val as f64).to_string());
+                            modified = true;
+                            info!("Converted field '{}' to float in flow {}", field_name, flow_id);
+                        } else {
+                            // Invalid value, remove it
+                            custom_fields.remove(field_name);
+                            modified = true;
+                            skipped_fields += 1;
+                            warn!("Invalid float value '{}' for field '{}' in category '{}'", 
+                                value, field_name, new_category.name);
+                        }
+                    },
+                    FieldType::Currency => {
+                        // Remove currency symbols and commas, then validate
+                        let clean_value = value.replace(['$', ','], "");
+                        if let Ok(_) = clean_value.parse::<f64>() {
+                            // Value is valid, update with cleaned version
+                            custom_fields.insert(field_name.clone(), clean_value);
+                            modified = true;
+                            info!("Cleaned currency field '{}' in flow {}", field_name, flow_id);
+                        } else {
+                            // Invalid value, remove it
+                            custom_fields.remove(field_name);
+                            modified = true;
+                            skipped_fields += 1;
+                            warn!("Invalid currency value '{}' for field '{}' in category '{}'", 
+                                value, field_name, new_category.name);
+                        }
+                    },
+                    FieldType::Boolean => {
+                        match value.to_lowercase().as_str() {
+                            "true" | "1" | "yes" | "y" => {
+                                custom_fields.insert(field_name.clone(), "true".to_string());
+                                modified = true;
+                            },
+                            "false" | "0" | "no" | "n" => {
+                                custom_fields.insert(field_name.clone(), "false".to_string());
+                                modified = true;
+                            },
+                            _ => {
+                                // Invalid value, remove it
+                                custom_fields.remove(field_name);
+                                modified = true;
+                                skipped_fields += 1;
+                                warn!("Invalid boolean value '{}' for field '{}' in category '{}'", 
+                                    value, field_name, new_category.name);
+                            }
+                        }
+                    },
+                    FieldType::Date => {
+                        // Try to parse the date in various formats
+                        if chrono::NaiveDate::parse_from_str(&value, "%Y-%m-%d").is_ok() {
+                            // Already in correct format
+                        } else if let Ok(date) = chrono::NaiveDate::parse_from_str(&value, "%m/%d/%Y") {
+                            // Convert to standard format
+                            custom_fields.insert(field_name.clone(), date.format("%Y-%m-%d").to_string());
+                            modified = true;
+                            info!("Converted date field '{}' to standard format in flow {}", field_name, flow_id);
+                        } else {
+                            // Invalid value, remove it
+                            custom_fields.remove(field_name);
+                            modified = true;
+                            skipped_fields += 1;
+                            warn!("Invalid date value '{}' for field '{}' in category '{}'", 
+                                value, field_name, new_category.name);
+                        }
+                    },
+                    _ => {
+                        // Text and Select fields don't need validation
+                    }
+                }
+            }
+        }
+
+        // Update the flow if any changes were made
+        if modified {
+            let custom_fields_json = serde_json::to_string(&custom_fields)?;
+            conn.execute(
+                "UPDATE flows SET custom_fields = ? WHERE id = ?",
+                params![custom_fields_json, flow_id],
+            )?;
+            migrated_flows += 1;
+        }
+    }
+
+    info!("Flow migration summary for category '{}':", new_category.name);
+    info!("- Total flows processed: {}", total_flows);
+    info!("- Flows modified: {}", migrated_flows);
+    info!("- Fields skipped/removed: {}", skipped_fields);
+
+    Ok(())
 } 

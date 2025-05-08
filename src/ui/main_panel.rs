@@ -45,6 +45,10 @@ pub fn show_main_panel(ui: &mut egui::Ui, app: &mut PreftApp) {
 
         // Hide category button (only shown when a category is selected)
         if let Some(category_id) = &app.selected_category {
+            if ui.button("Edit Category").clicked() {
+                app.editing_category = Some(category_id.clone());
+                app.show_category_editor = true;
+            }
             if ui.button("Hide Category").clicked() {
                 app.hide_category_confirmation = Some(category_id.clone());
             }

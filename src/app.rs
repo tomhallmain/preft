@@ -34,6 +34,7 @@ pub struct PreftApp {
     pub show_report_dialog: bool,
     pub dashboard: Dashboard,
     pub category_flows_state: HashMap<String, CategoryFlowsState>,
+    pub editing_category: Option<String>,  // Track which category is being edited
 }
 
 impl PreftApp {
@@ -78,6 +79,7 @@ impl PreftApp {
             show_report_dialog: false,
             dashboard: Dashboard::new(),
             category_flows_state,
+            editing_category: None,
         }
     }
 

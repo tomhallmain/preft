@@ -1,8 +1,9 @@
 use anyhow::Result;
 use rusqlite::{Connection, params, types::FromSql, types::ValueRef, types::FromSqlError, types::Type};
 use chrono::NaiveDate;
-use crate::models::{Flow, Category, FlowType, TaxDeductionInfo, get_default_categories};
+use crate::models::{Flow, Category, FlowType, TaxDeductionInfo, CategoryField, get_default_categories};
 use crate::settings::UserSettings;
+use log::{error, info};
 mod migrations;
 
 pub struct Database {
@@ -110,10 +111,56 @@ impl Database {
         Ok(settings)
     }
 
-    pub fn save_category(&self, category: &Category) -> Result<()> {
+    fn get_category(conn: &Connection, category_id: &str) -> Result<Option<Category>> {
+        let mut stmt = conn.prepare("SELECT id, name, flow_type, fields, tax_deduction_allowed, tax_deduction_default FROM categories WHERE id = ?")?;
+        let result = stmt.query_row(params![category_id], |row| {
+            let id: String = row.get(0)?;
+            let name: String = row.get(1)?;
+            let flow_type_str: String = row.get(2)?;
+            let fields_json: String = row.get(3)?;
+            let tax_deduction_allowed: i64 = row.get(4)?;
+            let tax_deduction_default: i64 = row.get(5)?;
+            
+            let flow_type = match flow_type_str.as_str() {
+                "Income" => FlowType::Income,
+                "Expense" => FlowType::Expense,
+                _ => return Err(rusqlite::Error::InvalidParameterName(format!("Invalid flow type: {}", flow_type_str))),
+            };
+            
+            let fields: Vec<CategoryField> = serde_json::from_str(&fields_json)
+                .map_err(|e| rusqlite::Error::InvalidParameterName(e.to_string()))?;
+            
+            Ok(Category {
+                id,
+                name,
+                flow_type,
+                parent_id: None,
+                fields,
+                tax_deduction: TaxDeductionInfo {
+                    deduction_allowed: tax_deduction_allowed != 0,
+                    default_value: tax_deduction_default != 0,
+                },
+            })
+        });
+
+        match result {
+            Ok(category) => Ok(Some(category)),
+            Err(rusqlite::Error::ExecuteReturnedResults) => Ok(None),
+            Err(e) => Err(e.into()),
+        }
+    }
+
+    pub fn save_category(&mut self, category: &Category) -> Result<()> {
+        // Start transaction
+        let tx = self.conn.transaction()?;
+
+        // Get the old category before making any changes
+        let old_category = Self::get_category(&tx, &category.id)?
+            .ok_or_else(|| anyhow::anyhow!("Category not found: {}", category.id))?;
+
+        // Save the category
         let fields_json = serde_json::to_string(&category.fields)?;
-        
-        self.conn.execute(
+        tx.execute(
             "INSERT OR REPLACE INTO categories (id, name, flow_type, fields, tax_deduction_allowed, tax_deduction_default)
              VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
             params![
@@ -126,6 +173,13 @@ impl Database {
             ],
         )?;
 
+        // Run migrations if needed
+        if migrations::has_schema_changes(&old_category, category) {
+            migrations::migrate_flows_to_new_category(&tx, &old_category, category)?;
+        }
+
+        // Commit transaction
+        tx.commit()?;
         Ok(())
     }
 
