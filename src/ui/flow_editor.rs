@@ -151,7 +151,7 @@ impl FlowEditor {
                     // Category-specific fields
                     for field in &category.fields {
                         ui.horizontal(|ui| {
-                            ui.label(format!("{}:", field.name));
+                            ui.label(format!("{}:", field.display_name()));
                             match field.field_type {
                                 crate::models::FieldType::Text => {
                                     let value = app.custom_field_values

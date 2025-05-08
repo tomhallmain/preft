@@ -126,7 +126,7 @@ fn show_flows_table(ui: &mut egui::Ui, app: &mut PreftApp, category: &Category) 
                         ui.label("Tax Deductible");
                     }
                     for field in &category.fields {
-                        ui.label(&field.name);
+                        ui.label(field.display_name());
                     }
                     ui.label(""); // Empty header for edit button column
                     ui.label(""); // Spacer

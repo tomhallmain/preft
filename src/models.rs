@@ -58,6 +58,34 @@ pub struct CategoryField {
     pub default_value: Option<String>,
 }
 
+impl CategoryField {
+    pub fn display_name(&self) -> String {
+        let first_char = self.name.chars().next();
+        let needs_formatting = match first_char {
+            Some(c) if c.is_alphabetic() => {
+                // Format if first char is lowercase or if there are underscores
+                !c.is_uppercase() || self.name.contains('_')
+            },
+            _ => false,
+        };
+
+        if needs_formatting {
+            self.name.split('_')
+                .map(|word| {
+                    let mut chars = word.chars();
+                    match chars.next() {
+                        None => String::new(),
+                        Some(first) => first.to_uppercase().chain(chars).collect(),
+                    }
+                })
+                .collect::<Vec<String>>()
+                .join(" ")
+        } else {
+            self.name.clone()
+        }
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub enum FieldType {
     Text,
