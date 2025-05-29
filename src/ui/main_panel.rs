@@ -1,4 +1,5 @@
 use eframe::egui;
+use chrono::Datelike;
 
 use crate::app::PreftApp;
 use crate::ui::category_flows::show_category_flows;
@@ -105,6 +106,37 @@ pub fn show_main_panel(ui: &mut egui::Ui, app: &mut PreftApp) {
         if ui.button("Show Hidden Categories").clicked() {
             app.show_hidden_categories = !app.show_hidden_categories;
         }
+
+        // Year filter control
+        ui.horizontal(|ui| {
+            ui.label("Year Filter:");
+            let current_year = chrono::Local::now().year();
+            let mut year_filter = app.user_settings.get_year_filter();
+            
+            egui::ComboBox::from_id_source("year_filter")
+                .selected_text(match year_filter {
+                    Some(year) => year.to_string(),
+                    None => "All Years".to_string(),
+                })
+                .show_ui(ui, |ui| {
+                    ui.selectable_value(&mut year_filter, None, "All Years");
+                    // Show last 5 years and next year
+                    for year in (current_year - 5)..=(current_year + 1) {
+                        ui.selectable_value(&mut year_filter, Some(year), year.to_string());
+                    }
+                });
+
+            if year_filter != app.user_settings.get_year_filter() {
+                app.user_settings.set_year_filter(year_filter);
+                if let Err(e) = app.db.save_user_settings(&app.user_settings) {
+                    eprintln!("Failed to save user settings: {}", e);
+                }
+                // Mark all category flows states for update
+                for state in app.category_flows_state.values_mut() {
+                    state.mark_for_update();
+                }
+            }
+        });
     });
 
     // Show hidden categories management if enabled

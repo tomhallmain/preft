@@ -134,10 +134,20 @@ fn show_flows_table(ui: &mut egui::Ui, app: &mut PreftApp, category: &Category) 
                     ui.end_row();
 
                     // Data rows
-                    let flows: Vec<_> = app.flows.iter()
+                    let mut flows: Vec<_> = app.flows.iter()
                         .filter(|f| f.category_id == category.id)
+                        .filter(|f| {
+                            if let Some(year) = app.user_settings.get_year_filter() {
+                                f.date.year() == year
+                            } else {
+                                true
+                            }
+                        })
                         .cloned()
                         .collect();
+                    
+                    // Sort flows by date in descending order (newest first)
+                    flows.sort_by(|a, b| b.date.cmp(&a.date));
 
                     for flow in flows {
                         // Date cell
