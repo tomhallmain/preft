@@ -4,6 +4,7 @@ use crate::app::PreftApp;
 
 pub fn show_backup_dialog(ctx: &egui::Context, app: &mut PreftApp) {
     let mut show_window = app.show_backup_dialog;
+    let mut should_close = false;
     
     egui::Window::new("Backup & Restore")
         .open(&mut show_window)
@@ -154,8 +155,8 @@ pub fn show_backup_dialog(ctx: &egui::Context, app: &mut PreftApp) {
                             ui.strong("Status");
                             ui.end_row();
                             
-                            // History entries (show most recent first)
-                            for entry in app.user_settings.backup_history.iter().rev() {
+                            // History entries (show most recent first, limit to 3 for display)
+                            for entry in app.user_settings.backup_history.iter().rev().take(3) {
                                 ui.label(entry.timestamp.format("%Y-%m-%d %H:%M").to_string());
                                 
                                 // Show just the filename, not the full path
@@ -180,6 +181,12 @@ pub fn show_backup_dialog(ctx: &egui::Context, app: &mut PreftApp) {
                             }
                         });
                 });
+                
+                // Show note if there are more entries than displayed
+                if app.user_settings.backup_history.len() > 3 {
+                    ui.label(format!("Showing 3 most recent entries ({} total entries stored)", 
+                        app.user_settings.backup_history.len()));
+                }
             }
             
             ui.separator();
@@ -196,10 +203,12 @@ pub fn show_backup_dialog(ctx: &egui::Context, app: &mut PreftApp) {
             ui.horizontal(|ui| {
                 ui.add_space(ui.available_width() - 60.0); // Push button to the right
                 if ui.button("Close").clicked() {
-                    app.show_backup_dialog = false;
+                    should_close = true;
                 }
             });
         });
     
-    app.show_backup_dialog = show_window;
+    if should_close {
+        app.show_backup_dialog = false;
+    }
 }

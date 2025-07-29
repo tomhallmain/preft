@@ -99,6 +99,19 @@ impl EncryptionConfig {
         self.password_hash = None;
         self.salt = None;
         self.database_encrypted = false;
+        
+        self.save()?;
+        Ok(())
+    }
+
+    /// Re-enable encryption configuration (without setting password)
+    /// This puts the system back into the "configured but no password" state
+    pub fn re_enable_encryption(&mut self) -> Result<()> {
+        self.enabled = true;
+        self.password_hash = None;
+        self.salt = None;
+        self.database_encrypted = false;
+        
         self.save()?;
         Ok(())
     }

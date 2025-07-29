@@ -5,6 +5,7 @@ use uuid::Uuid;
 use std::fs::File;
 use std::io::Write;
 use chrono::{Datelike, Local};
+use log::info;
 
 use crate::models::{Flow, Category, CategoryField, get_default_categories};
 use crate::ui::{show_main_panel, FlowEditorState};
@@ -573,6 +574,17 @@ impl PreftApp {
         Ok(())
     }
 
+    pub fn re_enable_encryption(&mut self) -> Result<(), anyhow::Error> {
+        // Re-enable encryption configuration (without password)
+        self.encryption_config.re_enable_encryption()?;
+        
+        // Database remains unencrypted until password is set
+        self.db.set_encryption_state(false, None, None)?;
+        
+        self.encryption_status = Some("Encryption configuration re-enabled. Set a password to encrypt the database.".to_string());
+        Ok(())
+    }
+
     pub fn clear_encryption_status(&mut self) {
         self.encryption_status = None;
     }
@@ -683,12 +695,12 @@ impl PreftApp {
         // Remove files beyond the 5th one
         let files_to_remove = backup_files.len().saturating_sub(5);
         if files_to_remove > 0 {
-            eprintln!("Cleaning up {} old automatic backup(s)...", files_to_remove);
+            info!("Cleaning up {} old automatic backup(s)...", files_to_remove);
             for (file_path, _) in backup_files.iter().skip(5) {
                 if let Err(e) = std::fs::remove_file(file_path) {
                     eprintln!("Warning: Failed to remove old backup file {:?}: {}", file_path, e);
                 } else {
-                    eprintln!("Removed old backup: {:?}", file_path.file_name().unwrap_or_default());
+                    info!("Removed old backup: {:?}", file_path.file_name().unwrap_or_default());
                 }
             }
         }

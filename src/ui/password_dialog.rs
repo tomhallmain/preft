@@ -54,6 +54,14 @@ pub fn show_password_dialog(ctx: &egui::Context, app: &mut PreftApp) {
                             }
                         }
                         
+                        if ui.button("Configure Encryption (No Password)").clicked() {
+                            if let Err(e) = app.re_enable_encryption() {
+                                app.encryption_status = Some(format!("Failed to configure encryption: {}", e));
+                            } else {
+                                app.show_password_dialog = false;
+                            }
+                        }
+                        
                         if ui.button("Cancel").clicked() {
                             app.show_password_dialog = false;
                             app.clear_encryption_status();

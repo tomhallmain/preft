@@ -69,8 +69,8 @@ impl UserSettings {
     }
 
     pub fn add_backup_entry(&mut self, entry: BackupEntry) {
-        // Keep only the last 10 backup entries
-        if self.backup_history.len() >= 10 {
+        // Keep only the last 100 backup entries
+        if self.backup_history.len() >= 100 {
             self.backup_history.remove(0);
         }
         self.backup_history.push(entry);

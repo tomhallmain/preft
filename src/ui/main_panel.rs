@@ -27,13 +27,15 @@ pub fn show_main_panel(ui: &mut egui::Ui, app: &mut PreftApp) {
                     app.show_disable_encryption_dialog();
                 }
             } else {
-                ui.label(egui::RichText::new("🔓 Encryption Enabled (No Password)").color(egui::Color32::from_rgb(255, 140, 0))); // Dark orange/amber
+                ui.label(egui::RichText::new("🔓 Encryption Configured (No Password)").color(egui::Color32::from_rgb(255, 140, 0))); // Dark orange/amber
+                ui.label("Database is currently unencrypted. Set a password to enable encryption.");
                 if ui.button("Set Password").clicked() {
                     app.show_set_password_dialog();
                 }
             }
         } else {
-            ui.label(egui::RichText::new("🔓 Unencrypted").color(egui::Color32::RED));
+            ui.label(egui::RichText::new("🔓 Unencrypted").color(egui::Color32::from_rgb(255, 140, 0))); // Dark orange/amber
+            ui.label("Database is not encrypted. Enable encryption for better security.");
             if ui.button("Enable Encryption").clicked() {
                 app.show_set_password_dialog();
             }
