@@ -13,12 +13,20 @@ pub struct BackupEntry {
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct UserSettings {
+    #[serde(default)]
     pub hidden_categories: HashSet<String>,  // Set of category IDs that are hidden
+    #[serde(default)]
     pub year_filter: Option<i32>,  // Optional year to filter flows by, None means show all years
     #[serde(default)]
     pub backup_history: Vec<BackupEntry>,  // History of backup operations
     #[serde(default)]
     pub last_backup_path: Option<String>,  // Path of the last successful backup
+    #[serde(default)]
+    pub auto_backup_enabled: bool,  // Whether automatic backups are enabled
+    #[serde(default)]
+    pub auto_backup_directory: Option<String>,  // Directory for automatic backups
+    #[serde(default)]
+    pub auto_backup_encrypted: Option<bool>,  // Whether automatic backups should be encrypted (None = use default)
     // Future settings can be added here, such as:
     // - preferred date format
     // - default currency
@@ -34,6 +42,9 @@ impl UserSettings {
             year_filter: Some(chrono::Local::now().year()),  // Default to current year
             backup_history: Vec::new(),
             last_backup_path: None,
+            auto_backup_enabled: false,
+            auto_backup_directory: None,
+            auto_backup_encrypted: None,
         }
     }
 
@@ -71,5 +82,29 @@ impl UserSettings {
 
     pub fn set_last_backup_path(&mut self, path: String) {
         self.last_backup_path = Some(path);
+    }
+
+    pub fn set_auto_backup_enabled(&mut self, enabled: bool) {
+        self.auto_backup_enabled = enabled;
+    }
+
+    pub fn is_auto_backup_enabled(&self) -> bool {
+        self.auto_backup_enabled
+    }
+
+    pub fn set_auto_backup_directory(&mut self, directory: Option<String>) {
+        self.auto_backup_directory = directory;
+    }
+
+    pub fn get_auto_backup_directory(&self) -> Option<&String> {
+        self.auto_backup_directory.as_ref()
+    }
+
+    pub fn set_auto_backup_encrypted(&mut self, encrypted: Option<bool>) {
+        self.auto_backup_encrypted = encrypted;
+    }
+
+    pub fn get_auto_backup_encrypted(&self) -> Option<bool> {
+        self.auto_backup_encrypted
     }
 } 

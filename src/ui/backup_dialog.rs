@@ -34,6 +34,82 @@ pub fn show_backup_dialog(ctx: &egui::Context, app: &mut PreftApp) {
             
             ui.separator();
             
+            // Automatic backup settings
+            ui.heading("Automatic Backup Settings");
+            
+            // Enable/disable automatic backup
+            let mut auto_backup_enabled = app.user_settings.is_auto_backup_enabled();
+            if ui.checkbox(&mut auto_backup_enabled, "Enable automatic backups").changed() {
+                app.user_settings.set_auto_backup_enabled(auto_backup_enabled);
+                // Save settings immediately
+                if let Err(e) = app.db.save_user_settings(&app.user_settings) {
+                    eprintln!("Failed to save auto backup setting: {}", e);
+                }
+            }
+            
+            if auto_backup_enabled {
+                ui.label("Automatic backups will be created when the application closes.");
+                
+                // Backup directory selection
+                ui.horizontal(|ui| {
+                    ui.label("Backup Directory:");
+                    let current_dir = app.user_settings.get_auto_backup_directory()
+                        .map(|s| s.as_str())
+                        .unwrap_or("Default (.preft/auto_backups)");
+                    ui.label(current_dir);
+                    
+                    if ui.button("Change Directory").clicked() {
+                        if let Some(path) = rfd::FileDialog::new()
+                            .set_directory(dirs::home_dir().unwrap_or_default())
+                            .pick_folder() {
+                            app.user_settings.set_auto_backup_directory(Some(path.to_string_lossy().to_string()));
+                            // Save settings immediately
+                            if let Err(e) = app.db.save_user_settings(&app.user_settings) {
+                                eprintln!("Failed to save auto backup directory: {}", e);
+                            }
+                        }
+                    }
+                });
+                
+                // Encryption setting for automatic backups
+                ui.horizontal(|ui| {
+                    ui.label("Backup Encryption:");
+                    let current_encrypted = app.user_settings.get_auto_backup_encrypted();
+                    let mut encrypted = current_encrypted.unwrap_or(false);
+                    
+                    egui::ComboBox::from_id_source("auto_backup_encryption")
+                        .selected_text(match current_encrypted {
+                            Some(true) => "Encrypted",
+                            Some(false) => "Unencrypted", 
+                            None => "Default (Unencrypted)"
+                        })
+                        .show_ui(ui, |ui| {
+                            ui.selectable_value(&mut encrypted, false, "Unencrypted");
+                            ui.selectable_value(&mut encrypted, true, "Encrypted");
+                        });
+                    
+                    if current_encrypted != Some(encrypted) {
+                        app.user_settings.set_auto_backup_encrypted(Some(encrypted));
+                        // Save settings immediately
+                        if let Err(e) = app.db.save_user_settings(&app.user_settings) {
+                            eprintln!("Failed to save auto backup encryption setting: {}", e);
+                        }
+                    }
+                });
+                
+                // Show next automatic backup info
+                if let Some(last_backup) = app.user_settings.get_last_successful_backup() {
+                    ui.label(format!("Last automatic backup: {}", 
+                        last_backup.timestamp.format("%Y-%m-%d %H:%M:%S UTC")));
+                } else {
+                    ui.label("No automatic backups created yet.");
+                }
+            } else {
+                ui.label("Automatic backups are disabled.");
+            }
+            
+            ui.separator();
+            
             // Action buttons
             ui.heading("Actions");
             ui.horizontal(|ui| {

@@ -576,6 +576,125 @@ impl PreftApp {
     pub fn clear_encryption_status(&mut self) {
         self.encryption_status = None;
     }
+
+    /// Create an automatic backup if enabled
+    pub fn create_automatic_backup(&mut self) -> Result<(), anyhow::Error> {
+        if !self.user_settings.is_auto_backup_enabled() {
+            return Ok(());
+        }
+
+        let backup_dir = match self.user_settings.get_auto_backup_directory() {
+            Some(dir) => std::path::PathBuf::from(dir),
+            None => {
+                // Use default backup directory in user's home directory
+                let home_dir = dirs::home_dir().ok_or_else(|| {
+                    anyhow::anyhow!("Could not determine home directory")
+                })?;
+                home_dir.join(".preft").join("auto_backups")
+            }
+        };
+
+        // Check if backup directory is accessible
+        if !backup_dir.exists() {
+            // Try to create the directory, but don't fail if we can't
+            if let Err(e) = std::fs::create_dir_all(&backup_dir) {
+                eprintln!("Warning: Could not create backup directory {:?}: {}", backup_dir, e);
+                return Ok(()); // Gracefully skip backup if directory creation fails
+            }
+        }
+
+        // Check if directory is writable
+        if let Err(e) = std::fs::metadata(&backup_dir) {
+            eprintln!("Warning: Backup directory {:?} is not accessible: {}", backup_dir, e);
+            return Ok(()); // Gracefully skip backup if directory is not accessible
+        }
+
+        // Generate backup filename with timestamp
+        let timestamp = chrono::Utc::now().format("%Y%m%d_%H%M%S");
+        let backup_filename = format!("preft_auto_backup_{}.db", timestamp);
+        let backup_path = backup_dir.join(backup_filename);
+
+        // Determine if we should create encrypted or unencrypted backup based on settings
+        let encrypted_backup = self.user_settings.auto_backup_encrypted.unwrap_or(false);
+        
+        // Create the backup
+        if let Err(e) = self.db.backup_to_file(&backup_path, encrypted_backup) {
+            eprintln!("Warning: Failed to create automatic backup: {}", e);
+            return Ok(()); // Gracefully skip backup if creation fails
+        }
+
+        // Update user settings
+        self.user_settings.set_last_backup_path(backup_path.to_string_lossy().to_string());
+        
+        // Add to backup history
+        let file_size = std::fs::metadata(&backup_path).ok().map(|m| m.len());
+        let entry = crate::settings::BackupEntry {
+            timestamp: chrono::Utc::now(),
+            file_path: backup_path.to_string_lossy().to_string(),
+            file_size,
+            success: true,
+            error_message: None,
+        };
+        self.user_settings.add_backup_entry(entry);
+
+        // Save updated settings (don't fail if this doesn't work)
+        if let Err(e) = self.db.save_user_settings(&self.user_settings) {
+            eprintln!("Warning: Failed to save backup history: {}", e);
+        }
+
+        // Clean up old automatic backups (keep only the 5 most recent)
+        if let Err(e) = self.cleanup_old_automatic_backups(&backup_dir) {
+            eprintln!("Warning: Failed to cleanup old automatic backups: {}", e);
+        }
+
+        Ok(())
+    }
+
+    /// Clean up old automatic backups, keeping only the 5 most recent
+    fn cleanup_old_automatic_backups(&self, backup_dir: &std::path::Path) -> Result<(), anyhow::Error> {
+        // Read all files in the backup directory
+        let mut backup_files = Vec::new();
+        
+        if let Ok(entries) = std::fs::read_dir(backup_dir) {
+            for entry in entries {
+                if let Ok(entry) = entry {
+                    let path = entry.path();
+                    
+                    // Only consider files that match our automatic backup pattern
+                    if let Some(file_name) = path.file_name() {
+                        if let Some(file_name_str) = file_name.to_str() {
+                            if file_name_str.starts_with("preft_auto_backup_") && file_name_str.ends_with(".db") {
+                                // Get file metadata for sorting by modification time
+                                if let Ok(metadata) = std::fs::metadata(&path) {
+                                    if let Ok(modified_time) = metadata.modified() {
+                                        backup_files.push((path, modified_time));
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        // Sort by modification time (newest first)
+        backup_files.sort_by(|a, b| b.1.cmp(&a.1));
+
+        // Remove files beyond the 5th one
+        let files_to_remove = backup_files.len().saturating_sub(5);
+        if files_to_remove > 0 {
+            eprintln!("Cleaning up {} old automatic backup(s)...", files_to_remove);
+            for (file_path, _) in backup_files.iter().skip(5) {
+                if let Err(e) = std::fs::remove_file(file_path) {
+                    eprintln!("Warning: Failed to remove old backup file {:?}: {}", file_path, e);
+                } else {
+                    eprintln!("Removed old backup: {:?}", file_path.file_name().unwrap_or_default());
+                }
+            }
+        }
+
+        Ok(())
+    }
 }
 
 impl eframe::App for PreftApp {
@@ -794,6 +913,13 @@ impl eframe::App for PreftApp {
         // Handle escape key to close the editor
         if ctx.input(|i| i.key_pressed(egui::Key::Escape)) {
             self.cancel_flow_edit();
+        }
+    }
+
+    fn on_exit(&mut self, _gl: Option<&eframe::glow::Context>) {
+        // Create automatic backup if enabled
+        if let Err(e) = self.create_automatic_backup() {
+            eprintln!("Failed to create automatic backup on shutdown: {}", e);
         }
     }
 } 
