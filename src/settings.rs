@@ -1,11 +1,24 @@
 use serde::{Deserialize, Serialize};
 use std::collections::HashSet;
-use chrono::{self, Datelike};
+use chrono::{self, Datelike, DateTime, Utc};
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct BackupEntry {
+    pub timestamp: DateTime<Utc>,
+    pub file_path: String,
+    pub file_size: Option<u64>,
+    pub success: bool,
+    pub error_message: Option<String>,
+}
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct UserSettings {
     pub hidden_categories: HashSet<String>,  // Set of category IDs that are hidden
     pub year_filter: Option<i32>,  // Optional year to filter flows by, None means show all years
+    #[serde(default)]
+    pub backup_history: Vec<BackupEntry>,  // History of backup operations
+    #[serde(default)]
+    pub last_backup_path: Option<String>,  // Path of the last successful backup
     // Future settings can be added here, such as:
     // - preferred date format
     // - default currency
@@ -19,6 +32,8 @@ impl UserSettings {
         Self {
             hidden_categories: HashSet::new(),
             year_filter: Some(chrono::Local::now().year()),  // Default to current year
+            backup_history: Vec::new(),
+            last_backup_path: None,
         }
     }
 
@@ -40,5 +55,21 @@ impl UserSettings {
 
     pub fn get_year_filter(&self) -> Option<i32> {
         self.year_filter
+    }
+
+    pub fn add_backup_entry(&mut self, entry: BackupEntry) {
+        // Keep only the last 10 backup entries
+        if self.backup_history.len() >= 10 {
+            self.backup_history.remove(0);
+        }
+        self.backup_history.push(entry);
+    }
+
+    pub fn get_last_successful_backup(&self) -> Option<&BackupEntry> {
+        self.backup_history.iter().rev().find(|entry| entry.success)
+    }
+
+    pub fn set_last_backup_path(&mut self, path: String) {
+        self.last_backup_path = Some(path);
     }
 } 

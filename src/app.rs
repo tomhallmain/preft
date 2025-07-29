@@ -1,3 +1,4 @@
+use anyhow::Result;
 use eframe::egui;
 use std::collections::HashMap;
 use uuid::Uuid;
@@ -12,6 +13,8 @@ use crate::settings::UserSettings;
 use crate::reporting::{ReportRequest, ReportGenerator};
 use crate::ui::dashboard::Dashboard;
 use crate::ui::category_flows::CategoryFlowsState;
+use rusqlite::Connection;
+use crate::encryption_config::EncryptionConfig;
 
 pub struct PreftApp {
     pub categories: Vec<Category>,
@@ -35,22 +38,80 @@ pub struct PreftApp {
     pub dashboard: Dashboard,
     pub category_flows_state: HashMap<String, CategoryFlowsState>,
     pub editing_category: Option<String>,  // Track which category is being edited
+    // Backup-related fields
+    pub show_backup_dialog: bool,
+    pub backup_status: Option<String>,
+    pub backup_in_progress: bool,
+    // Encryption-related fields
+    pub show_password_dialog: bool,
+    pub password_dialog_mode: PasswordDialogMode,
+    pub password_input: String,
+    pub password_confirm: String,
+    pub encryption_status: Option<String>,
+    // Encryption configuration (loaded from OS keystore)
+    pub encryption_config: EncryptionConfig,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub enum PasswordDialogMode {
+    SetPassword,      // First time setting password
+    EnterPassword,    // Entering password to unlock encrypted database
+    ChangePassword,   // Changing existing password
+    DisableEncryption, // Disabling encryption entirely
 }
 
 impl PreftApp {
     pub fn new(cc: &eframe::CreationContext<'_>) -> Self {
         // Initialize database
-        let db = Database::new().expect("Failed to initialize database");
+        let db = match Database::new() {
+            Ok(db) => db,
+            Err(e) => {
+                eprintln!("Failed to initialize database: {}", e);
+                eprintln!("This might happen if the database file is corrupted or inaccessible.");
+                eprintln!("The application will start with default settings.");
+                
+                // Try to create a minimal database connection for basic functionality
+                match Database::new_minimal() {
+                    Ok(db) => {
+                        eprintln!("Successfully created minimal database connection.");
+                        db
+                    }
+                    Err(e2) => {
+                        eprintln!("Failed to create minimal database: {}", e2);
+                        eprintln!("Using in-memory database as last resort.");
+                        
+                        // Create an in-memory database as fallback
+                        let conn = Connection::open_in_memory().expect("Failed to create in-memory database");
+                        Database::from_connection(conn)
+                    }
+                }
+            }
+        };
         
         // Load categories from database or use defaults if none exist
         let categories = db.load_categories()
-            .unwrap_or_else(|_| get_default_categories());
+            .unwrap_or_else(|e| {
+                eprintln!("Failed to load categories: {}", e);
+                get_default_categories()
+            });
             
         // Load flows from database
-        let flows = db.load_flows().unwrap_or_default();
+        let flows = db.load_flows().unwrap_or_else(|e| {
+            eprintln!("Failed to load flows: {}", e);
+            Vec::new()
+        });
 
         // Load user settings
-        let user_settings = db.load_user_settings().unwrap_or_default();
+        let user_settings = db.load_user_settings().unwrap_or_else(|e| {
+            eprintln!("Failed to load user settings: {}", e);
+            UserSettings::new()
+        });
+        
+        // Load encryption configuration
+        let encryption_config = EncryptionConfig::load().unwrap_or_else(|e| {
+            eprintln!("Failed to load encryption config: {}", e);
+            EncryptionConfig::default()
+        });
         
         // Initialize category flows state for all categories
         let mut category_flows_state = HashMap::new();
@@ -80,6 +141,18 @@ impl PreftApp {
             dashboard: Dashboard::new(),
             category_flows_state,
             editing_category: None,
+            // Backup-related fields
+            show_backup_dialog: false,
+            backup_status: None,
+            backup_in_progress: false,
+            // Encryption-related fields
+            show_password_dialog: false,
+            password_dialog_mode: PasswordDialogMode::SetPassword,
+            password_input: String::new(),
+            password_confirm: String::new(),
+            encryption_status: None,
+            // Encryption configuration (loaded from OS keystore)
+            encryption_config,
         }
     }
 
@@ -279,6 +352,229 @@ impl PreftApp {
         self.category_flows_state
             .entry(category_id.to_string())
             .or_insert_with(CategoryFlowsState::new)
+    }
+
+    pub fn create_backup(&mut self) {
+        if self.backup_in_progress {
+            return;
+        }
+
+        self.backup_in_progress = true;
+        self.backup_status = Some("Selecting backup location...".to_string());
+
+        // Show file dialog for backup location
+        if let Some(path) = rfd::FileDialog::new()
+            .set_title("Save Backup As")
+            .set_file_name(&format!("preft_backup_{}.db", chrono::Local::now().format("%Y%m%d_%H%M%S")))
+            .add_filter("SQLite Database", &["db"])
+            .add_filter("All Files", &["*"])
+            .save_file()
+        {
+            self.backup_status = Some("Creating backup...".to_string());
+
+            // Determine if we should create encrypted or unencrypted backup
+            let encrypted_backup = self.db.is_encrypted();
+            
+            match self.db.backup_to_file(&path, encrypted_backup) {
+                Ok(_) => {
+                    let file_size = std::fs::metadata(&path)
+                        .map(|m| m.len())
+                        .ok();
+
+                    let entry = crate::settings::BackupEntry {
+                        timestamp: chrono::Utc::now(),
+                        file_path: path.to_string_lossy().to_string(),
+                        file_size,
+                        success: true,
+                        error_message: None,
+                    };
+
+                    self.user_settings.add_backup_entry(entry.clone());
+                    self.user_settings.set_last_backup_path(path.to_string_lossy().to_string());
+
+                    if let Err(e) = self.db.save_user_settings(&self.user_settings) {
+                        eprintln!("Failed to save backup history: {}", e);
+                    }
+
+                    self.backup_status = Some(format!(
+                        "Backup completed successfully! {}",
+                        if encrypted_backup { "(Encrypted)" } else { "(Unencrypted)" }
+                    ));
+                }
+                Err(e) => {
+                    let entry = crate::settings::BackupEntry {
+                        timestamp: chrono::Utc::now(),
+                        file_path: path.to_string_lossy().to_string(),
+                        file_size: None,
+                        success: false,
+                        error_message: Some(e.to_string()),
+                    };
+
+                    self.user_settings.add_backup_entry(entry);
+                    if let Err(e) = self.db.save_user_settings(&self.user_settings) {
+                        eprintln!("Failed to save backup history: {}", e);
+                    }
+
+                    self.backup_status = Some(format!("Backup failed: {}", e));
+                }
+            }
+        } else {
+            self.backup_status = Some("Backup cancelled".to_string());
+        }
+
+        self.backup_in_progress = false;
+    }
+
+    pub fn restore_backup(&mut self) {
+        if self.backup_in_progress {
+            return;
+        }
+
+        self.backup_in_progress = true;
+        self.backup_status = Some("Selecting backup file...".to_string());
+
+        // Show file dialog for backup file
+        if let Some(path) = rfd::FileDialog::new()
+            .set_title("Select Backup File")
+            .add_filter("SQLite Database", &["db"])
+            .add_filter("All Files", &["*"])
+            .pick_file()
+        {
+            self.backup_status = Some("Restoring backup...".to_string());
+
+            // Try to detect if the backup is encrypted
+            let is_encrypted_backup = match self.db.detect_encrypted_backup(&path) {
+                Ok(encrypted) => encrypted,
+                Err(_) => false, // Assume unencrypted if we can't detect
+            };
+
+            let result = if is_encrypted_backup {
+                // For encrypted backups, we need the password
+                if !self.encryption_config.is_encryption_ready() {
+                    Err(anyhow::anyhow!("Encrypted backup detected but no password is set. Please set a password first."))
+                } else {
+                    // For now, we'll use a simple approach - if the backup is encrypted and we have encryption set up,
+                    // we'll try to restore it. In a real implementation, you might want to prompt the user for the password.
+                    // For now, we'll assume the current password works (this is a simplification)
+                    self.db.restore_from_file(&path, None, true) // Force unencrypted restore for now
+                }
+            } else {
+                // For unencrypted backups, restore as unencrypted
+                self.db.restore_from_file(&path, None, false)
+            };
+
+            match result {
+                Ok(_) => {
+                    // Reload all data from the restored database
+                    self.categories = self.db.load_categories()
+                        .unwrap_or_else(|e| { eprintln!("Failed to load categories: {}", e); Vec::new() });
+                    self.flows = self.db.load_flows()
+                        .unwrap_or_else(|e| { eprintln!("Failed to load flows: {}", e); Vec::new() });
+                    self.user_settings = self.db.load_user_settings()
+                        .unwrap_or_else(|e| { eprintln!("Failed to load user settings: {}", e); UserSettings::new() });
+
+                    // Update UI components to reflect the restored data
+                    self.dashboard.mark_for_update();
+                    
+                    // Update category flows states
+                    self.category_flows_state.clear();
+                    for category in &self.categories {
+                        self.category_flows_state.insert(category.id.clone(), crate::ui::category_flows::CategoryFlowsState::new());
+                    }
+
+                    self.backup_status = Some("Backup restored successfully!".to_string());
+                }
+                Err(e) => {
+                    self.backup_status = Some(format!("Restore failed: {}", e));
+                }
+            }
+        } else {
+            self.backup_status = Some("Restore cancelled".to_string());
+        }
+
+        self.backup_in_progress = false;
+    }
+
+    pub fn clear_backup_status(&mut self) {
+        self.backup_status = None;
+    }
+
+    // Password management methods
+    pub fn show_set_password_dialog(&mut self) {
+        self.password_dialog_mode = PasswordDialogMode::SetPassword;
+        self.password_input.clear();
+        self.password_confirm.clear();
+        self.show_password_dialog = true;
+    }
+
+    pub fn show_enter_password_dialog(&mut self) {
+        self.password_dialog_mode = PasswordDialogMode::EnterPassword;
+        self.password_input.clear();
+        self.password_confirm.clear();
+        self.show_password_dialog = true;
+    }
+
+    pub fn show_change_password_dialog(&mut self) {
+        self.password_dialog_mode = PasswordDialogMode::ChangePassword;
+        self.password_input.clear();
+        self.password_confirm.clear();
+        self.show_password_dialog = true;
+    }
+
+    pub fn show_disable_encryption_dialog(&mut self) {
+        self.password_dialog_mode = PasswordDialogMode::DisableEncryption;
+        self.password_input.clear();
+        self.password_confirm.clear();
+        self.show_password_dialog = true;
+    }
+
+    pub fn set_password(&mut self, password: &str) -> Result<(), anyhow::Error> {
+        // Set password in encryption config (this will generate salt and hash)
+        self.encryption_config.set_password(password)?;
+        
+        // Initialize encryption in database
+        self.db.initialize_encryption(password)?;
+        
+        self.encryption_status = Some("Password set successfully".to_string());
+        Ok(())
+    }
+
+    pub fn verify_password(&mut self, password: &str) -> Result<bool, anyhow::Error> {
+        let is_valid = self.encryption_config.verify_password(password);
+        
+        if is_valid {
+            // Initialize encryption with the correct password
+            let salt = self.encryption_config.get_salt()
+                .ok_or_else(|| anyhow::anyhow!("Salt not found"))?;
+            self.db.set_encryption_state(true, Some(password), Some(salt))?;
+            self.encryption_status = Some("Password verified successfully".to_string());
+        } else {
+            self.encryption_status = Some("Incorrect password".to_string());
+        }
+        
+        Ok(is_valid)
+    }
+
+    pub fn change_password(&mut self, new_password: &str) -> Result<(), anyhow::Error> {
+        // Set the new password (this will update the hash and salt)
+        self.set_password(new_password)?;
+        self.encryption_status = Some("Password changed successfully".to_string());
+        Ok(())
+    }
+
+    pub fn disable_encryption(&mut self) -> Result<(), anyhow::Error> {
+        // Disable encryption in the config
+        self.encryption_config.disable_encryption()?;
+        
+        // Disable encryption in the database
+        self.db.set_encryption_state(false, None, None)?;
+        
+        self.encryption_status = Some("Encryption disabled successfully".to_string());
+        Ok(())
+    }
+
+    pub fn clear_encryption_status(&mut self) {
+        self.encryption_status = None;
     }
 }
 
@@ -482,6 +778,16 @@ impl eframe::App for PreftApp {
                     self.report_request = report_request;
                     self.show_report_dialog = false;
                 }
+            }
+
+            // Show backup dialog if needed
+            if self.show_backup_dialog {
+                crate::ui::show_backup_dialog(ctx, self);
+            }
+
+            // Show password dialog if needed
+            if self.show_password_dialog {
+                crate::ui::show_password_dialog(ctx, self);
             }
         });
 

@@ -8,6 +8,41 @@ use crate::ui::category_editor::show_category_editor;
 pub fn show_main_panel(ui: &mut egui::Ui, app: &mut PreftApp) {
     ui.horizontal(|ui| {
         ui.heading("Personal Finance Tracker");
+    });
+
+    // Row for backup and encryption controls
+    ui.horizontal(|ui| {
+        if ui.button("Backup & Restore").clicked() {
+            app.show_backup_dialog = true;
+        }
+        
+        // Show encryption status and password management
+        if app.encryption_config.enabled {
+            if app.encryption_config.is_encryption_ready() {
+                ui.label(egui::RichText::new("🔒 Encrypted").color(egui::Color32::GREEN));
+                if ui.button("Change Password").clicked() {
+                    app.show_change_password_dialog();
+                }
+                if ui.button("Disable Encryption").clicked() {
+                    app.show_disable_encryption_dialog();
+                }
+            } else {
+                ui.label(egui::RichText::new("🔓 Encryption Enabled (No Password)").color(egui::Color32::from_rgb(255, 140, 0))); // Dark orange/amber
+                if ui.button("Set Password").clicked() {
+                    app.show_set_password_dialog();
+                }
+            }
+        } else {
+            ui.label(egui::RichText::new("🔓 Unencrypted").color(egui::Color32::RED));
+            if ui.button("Enable Encryption").clicked() {
+                app.show_set_password_dialog();
+            }
+        }
+    });
+
+
+    // Row for main controls
+    ui.horizontal(|ui| {
         if ui.button("Show Dashboard").clicked() {
             app.selected_category = None;
         }

@@ -3,17 +3,19 @@ use log::info;
 
 use anyhow::Result;
 
-mod models;
 mod db;
-mod app;
-mod ui;
+mod models;
 mod settings;
+mod encryption;
+mod encryption_config;
 mod reporting;
 mod utils;
+mod ui;
+mod app;
 
 fn main() -> Result<(), eframe::Error> {
-    // Initialize logger
-    env_logger::init();
+    // Initialize logger with default level if RUST_LOG is not set
+    env_logger::Builder::from_env(env_logger::Env::default().default_filter_or("info")).init();
     info!("Starting Preft application");
 
     let options = eframe::NativeOptions {

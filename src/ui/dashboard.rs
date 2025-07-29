@@ -64,13 +64,15 @@ impl Dashboard {
         }
         // Sort by tracking ratio (lowest first)
         self.tracking_ratios.sort_by(|a, b| a.1.partial_cmp(&b.1).unwrap_or(std::cmp::Ordering::Equal));
-        self.needs_update = false;
     }
 
     pub fn show(&mut self, ui: &mut egui::Ui, flows: &[Flow], categories: &[Category]) {
-        // Update tracking ratios if needed
-        self.update_tracking_ratios(flows, categories);
+        // Update financial summary and tracking ratios if needed
         self.update_financial_summary(flows, categories);
+        self.update_tracking_ratios(flows, categories);
+        
+        // Reset the update flag after both functions have run
+        self.needs_update = false;
 
         ui.heading("Financial Dashboard");
         ui.separator();
