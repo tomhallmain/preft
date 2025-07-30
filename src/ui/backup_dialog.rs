@@ -1,4 +1,5 @@
 use eframe::egui;
+use log::{info, warn, error};
 
 use crate::app::PreftApp;
 
@@ -44,7 +45,7 @@ pub fn show_backup_dialog(ctx: &egui::Context, app: &mut PreftApp) {
                 app.user_settings.set_auto_backup_enabled(auto_backup_enabled);
                 // Save settings immediately
                 if let Err(e) = app.db.save_user_settings(&app.user_settings) {
-                    eprintln!("Failed to save auto backup setting: {}", e);
+                    log::error!("Failed to save auto backup setting: {}", e);
                 }
             }
             
@@ -66,7 +67,7 @@ pub fn show_backup_dialog(ctx: &egui::Context, app: &mut PreftApp) {
                             app.user_settings.set_auto_backup_directory(Some(path.to_string_lossy().to_string()));
                             // Save settings immediately
                             if let Err(e) = app.db.save_user_settings(&app.user_settings) {
-                                eprintln!("Failed to save auto backup directory: {}", e);
+                                log::error!("Failed to save auto backup directory: {}", e);
                             }
                         }
                     }
@@ -93,7 +94,7 @@ pub fn show_backup_dialog(ctx: &egui::Context, app: &mut PreftApp) {
                         app.user_settings.set_auto_backup_encrypted(Some(encrypted));
                         // Save settings immediately
                         if let Err(e) = app.db.save_user_settings(&app.user_settings) {
-                            eprintln!("Failed to save auto backup encryption setting: {}", e);
+                            log::error!("Failed to save auto backup encryption setting: {}", e);
                         }
                     }
                 });

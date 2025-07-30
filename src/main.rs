@@ -12,11 +12,12 @@ mod reporting;
 mod utils;
 mod ui;
 mod app;
+mod logging;
 
 fn main() -> Result<(), eframe::Error> {
-    // Initialize logger with default level if RUST_LOG is not set
-    env_logger::Builder::from_env(env_logger::Env::default().default_filter_or("info")).init();
-    info!("Starting Preft application");
+    // Initialize file-based logger before any log macros are used
+    logging::init_logging();
+    log::info!("Starting Preft application");
 
     let options = eframe::NativeOptions {
         viewport: egui::ViewportBuilder::default()

@@ -1,4 +1,5 @@
 use eframe::egui;
+use log::{info, warn, error};
 
 use crate::models::{Category, CategoryField, FieldType};
 use crate::app::PreftApp;
@@ -155,7 +156,7 @@ pub fn show_category_editor(ui: &mut egui::Ui, app: &mut PreftApp) {
                     if let Some(pos) = app.categories.iter().position(|c| c.id == category.id) {
                         app.categories[pos] = category.clone();
                         if let Err(e) = app.db.save_category(&category) {
-                            eprintln!("Failed to save category: {}", e);
+                            log::error!("Failed to save category: {}", e);
                         }
                     }
                     app.editing_category = None;

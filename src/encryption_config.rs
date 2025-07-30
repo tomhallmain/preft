@@ -2,6 +2,7 @@ use anyhow::Result;
 use keyring::Entry;
 use serde::{Deserialize, Serialize};
 use crate::encryption::DatabaseEncryption;
+use log::{info, warn, error};
 
 const KEYRING_SERVICE: &str = "MyPersonalApplicationsService";
 const KEYRING_USER: &str = "preft";
@@ -43,7 +44,7 @@ impl EncryptionConfig {
             }
             Err(e) => {
                 // Other error, return default but log the issue
-                eprintln!("Warning: Could not load encryption config from keystore: {}", e);
+                log::error!("Warning: Could not load encryption config from keystore: {}", e);
                 Ok(EncryptionConfig::default())
             }
         }

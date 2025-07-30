@@ -5,7 +5,7 @@ use uuid::Uuid;
 use std::fs::File;
 use std::io::Write;
 use chrono::{Datelike, Local};
-use log::info;
+use log::{info, warn, error};
 
 use crate::models::{Flow, Category, CategoryField, get_default_categories};
 use crate::ui::{show_main_panel, FlowEditorState};
@@ -67,19 +67,19 @@ impl PreftApp {
         let db = match Database::new() {
             Ok(db) => db,
             Err(e) => {
-                eprintln!("Failed to initialize database: {}", e);
-                eprintln!("This might happen if the database file is corrupted or inaccessible.");
-                eprintln!("The application will start with default settings.");
+                log::error!("Failed to initialize database: {}", e);
+                log::error!("This might happen if the database file is corrupted or inaccessible.");
+                log::error!("The application will start with default settings.");
                 
                 // Try to create a minimal database connection for basic functionality
                 match Database::new_minimal() {
                     Ok(db) => {
-                        eprintln!("Successfully created minimal database connection.");
+                        log::info!("Successfully created minimal database connection.");
                         db
                     }
                     Err(e2) => {
-                        eprintln!("Failed to create minimal database: {}", e2);
-                        eprintln!("Using in-memory database as last resort.");
+                        log::error!("Failed to create minimal database: {}", e2);
+                        log::error!("Using in-memory database as last resort.");
                         
                         // Create an in-memory database as fallback
                         let conn = Connection::open_in_memory().expect("Failed to create in-memory database");
@@ -92,25 +92,25 @@ impl PreftApp {
         // Load categories from database or use defaults if none exist
         let categories = db.load_categories()
             .unwrap_or_else(|e| {
-                eprintln!("Failed to load categories: {}", e);
+                log::error!("Failed to load categories: {}", e);
                 get_default_categories()
             });
             
         // Load flows from database
         let flows = db.load_flows().unwrap_or_else(|e| {
-            eprintln!("Failed to load flows: {}", e);
+            log::error!("Failed to load flows: {}", e);
             Vec::new()
         });
 
         // Load user settings
         let user_settings = db.load_user_settings().unwrap_or_else(|e| {
-            eprintln!("Failed to load user settings: {}", e);
+            log::error!("Failed to load user settings: {}", e);
             UserSettings::new()
         });
         
         // Load encryption configuration
         let encryption_config = EncryptionConfig::load().unwrap_or_else(|e| {
-            eprintln!("Failed to load encryption config: {}", e);
+            log::error!("Failed to load encryption config: {}", e);
             EncryptionConfig::default()
         });
         
@@ -160,7 +160,7 @@ impl PreftApp {
     pub fn toggle_category_visibility(&mut self, category_id: String) {
         self.user_settings.toggle_category_visibility(category_id);
         if let Err(e) = self.db.save_user_settings(&self.user_settings) {
-            eprintln!("Failed to save user settings: {}", e);
+            log::error!("Failed to save user settings: {}", e);
         }
     }
 
@@ -198,7 +198,7 @@ impl PreftApp {
 
         // Save to database
         if let Err(e) = self.db.save_flow(&flow_data) {
-            eprintln!("Failed to save flow: {}", e);
+            log::error!("Failed to save flow: {}", e);
             return;
         }
 
@@ -304,7 +304,7 @@ impl PreftApp {
     pub fn delete_category(&mut self, category_id: String) {
         // Remove the category from the database
         if let Err(e) = self.db.delete_category(&category_id) {
-            eprintln!("Failed to delete category: {}", e);
+            log::error!("Failed to delete category: {}", e);
             return;
         }
 
@@ -314,7 +314,7 @@ impl PreftApp {
         // Remove all flows associated with this category
         self.flows.retain(|f| f.category_id != category_id);
         if let Err(e) = self.db.delete_flows_by_category(&category_id) {
-            eprintln!("Failed to delete flows for category: {}", e);
+            log::error!("Failed to delete flows for category: {}", e);
         }
 
         // Clear selection if the deleted category was selected
@@ -345,7 +345,7 @@ impl PreftApp {
         self.categories.push(category.clone());
         self.category_flows_state.insert(category.id.clone(), CategoryFlowsState::new());
         if let Err(e) = self.db.save_category(&category) {
-            eprintln!("Failed to save category: {}", e);
+            log::error!("Failed to save category: {}", e);
         }
     }
 
@@ -394,7 +394,7 @@ impl PreftApp {
                     self.user_settings.set_last_backup_path(path.to_string_lossy().to_string());
 
                     if let Err(e) = self.db.save_user_settings(&self.user_settings) {
-                        eprintln!("Failed to save backup history: {}", e);
+                        log::error!("Failed to save backup history: {}", e);
                     }
 
                     self.backup_status = Some(format!(
@@ -413,7 +413,7 @@ impl PreftApp {
 
                     self.user_settings.add_backup_entry(entry);
                     if let Err(e) = self.db.save_user_settings(&self.user_settings) {
-                        eprintln!("Failed to save backup history: {}", e);
+                        log::error!("Failed to save backup history: {}", e);
                     }
 
                     self.backup_status = Some(format!("Backup failed: {}", e));
@@ -468,11 +468,11 @@ impl PreftApp {
                 Ok(_) => {
                     // Reload all data from the restored database
                     self.categories = self.db.load_categories()
-                        .unwrap_or_else(|e| { eprintln!("Failed to load categories: {}", e); Vec::new() });
+                        .unwrap_or_else(|e| { log::error!("Failed to load categories: {}", e); Vec::new() });
                     self.flows = self.db.load_flows()
-                        .unwrap_or_else(|e| { eprintln!("Failed to load flows: {}", e); Vec::new() });
+                        .unwrap_or_else(|e| { log::error!("Failed to load flows: {}", e); Vec::new() });
                     self.user_settings = self.db.load_user_settings()
-                        .unwrap_or_else(|e| { eprintln!("Failed to load user settings: {}", e); UserSettings::new() });
+                        .unwrap_or_else(|e| { log::error!("Failed to load user settings: {}", e); UserSettings::new() });
 
                     // Update UI components to reflect the restored data
                     self.dashboard.mark_for_update();
@@ -610,14 +610,14 @@ impl PreftApp {
         if !backup_dir.exists() {
             // Try to create the directory, but don't fail if we can't
             if let Err(e) = std::fs::create_dir_all(&backup_dir) {
-                eprintln!("Warning: Could not create backup directory {:?}: {}", backup_dir, e);
+                log::warn!("Warning: Could not create backup directory {:?}: {}", backup_dir, e);
                 return Ok(()); // Gracefully skip backup if directory creation fails
             }
         }
 
         // Check if directory is writable
         if let Err(e) = std::fs::metadata(&backup_dir) {
-            eprintln!("Warning: Backup directory {:?} is not accessible: {}", backup_dir, e);
+            log::warn!("Warning: Backup directory {:?} is not accessible: {}", backup_dir, e);
             return Ok(()); // Gracefully skip backup if directory is not accessible
         }
 
@@ -631,7 +631,7 @@ impl PreftApp {
         
         // Create the backup
         if let Err(e) = self.db.backup_to_file(&backup_path, encrypted_backup) {
-            eprintln!("Warning: Failed to create automatic backup: {}", e);
+            log::warn!("Warning: Failed to create automatic backup: {}", e);
             return Ok(()); // Gracefully skip backup if creation fails
         }
 
@@ -651,12 +651,12 @@ impl PreftApp {
 
         // Save updated settings (don't fail if this doesn't work)
         if let Err(e) = self.db.save_user_settings(&self.user_settings) {
-            eprintln!("Warning: Failed to save backup history: {}", e);
+            log::warn!("Warning: Failed to save backup history: {}", e);
         }
 
         // Clean up old automatic backups (keep only the 5 most recent)
         if let Err(e) = self.cleanup_old_automatic_backups(&backup_dir) {
-            eprintln!("Warning: Failed to cleanup old automatic backups: {}", e);
+            log::warn!("Warning: Failed to cleanup old automatic backups: {}", e);
         }
 
         Ok(())
@@ -695,12 +695,12 @@ impl PreftApp {
         // Remove files beyond the 5th one
         let files_to_remove = backup_files.len().saturating_sub(5);
         if files_to_remove > 0 {
-            info!("Cleaning up {} old automatic backup(s)...", files_to_remove);
+            log::info!("Cleaning up {} old automatic backup(s)...", files_to_remove);
             for (file_path, _) in backup_files.iter().skip(5) {
                 if let Err(e) = std::fs::remove_file(file_path) {
-                    eprintln!("Warning: Failed to remove old backup file {:?}: {}", file_path, e);
+                    log::warn!("Warning: Failed to remove old backup file {:?}: {}", file_path, e);
                 } else {
-                    info!("Removed old backup: {:?}", file_path.file_name().unwrap_or_default());
+                    log::info!("Removed old backup: {:?}", file_path.file_name().unwrap_or_default());
                 }
             }
         }
@@ -901,7 +901,7 @@ impl eframe::App for PreftApp {
                             .save_file() {
                             if let Ok(mut file) = File::create(path) {
                                 if let Err(e) = file.write_all(&data) {
-                                    eprintln!("Failed to save PDF: {}", e);
+                                    log::error!("Failed to save PDF: {}", e);
                                 }
                             }
                         }
@@ -931,7 +931,7 @@ impl eframe::App for PreftApp {
     fn on_exit(&mut self, _gl: Option<&eframe::glow::Context>) {
         // Create automatic backup if enabled
         if let Err(e) = self.create_automatic_backup() {
-            eprintln!("Failed to create automatic backup on shutdown: {}", e);
+            log::error!("Failed to create automatic backup on shutdown: {}", e);
         }
     }
 } 

@@ -5,8 +5,7 @@ use crate::models::{Flow, Category, FlowType, TaxDeductionInfo, CategoryField, g
 use crate::settings::UserSettings;
 use crate::encryption::DatabaseEncryption;
 use crate::encryption_config::EncryptionConfig;
-use log::info;
-use log::error;
+use log::{info, warn, error};
 use std::path::Path;
 mod migrations;
 
@@ -129,7 +128,7 @@ impl Database {
 
         self.encryption = Some(encryption);
         
-        info!("Database encryption initialized successfully");
+        log::info!("Database encryption initialized successfully");
         Ok(())
     }
 
@@ -243,8 +242,8 @@ impl Database {
                     Ok(settings) => Ok(settings),
                     Err(e) => {
                         // If deserialization fails, try to create default settings
-                        eprintln!("Warning: Failed to deserialize user settings: {}", e);
-                        eprintln!("This might be due to an old database format. Using default settings.");
+                        log::error!("Warning: Failed to deserialize user settings: {}", e);
+                        log::error!("This might be due to an old database format. Using default settings.");
                         Ok(UserSettings::new())
                     }
                 }
@@ -500,11 +499,11 @@ impl Database {
         
         // Perform the backup
         backup.run_to_completion(5, std::time::Duration::from_millis(100), Some(|progress| {
-            info!("Encrypted backup progress: {} pages", progress.pagecount);
+            log::info!("Encrypted backup progress: {} pages", progress.pagecount);
         }))?;
         
-        info!("Encrypted database backup completed to: {:?}", backup_path);
-        info!("Note: This backup requires the same password as the original database");
+        log::info!("Encrypted database backup completed to: {:?}", backup_path);
+        log::info!("Note: This backup requires the same password as the original database");
         Ok(())
     }
 
@@ -529,8 +528,8 @@ impl Database {
         // Commit the transaction
         tx.commit()?;
         
-        info!("Unencrypted database backup completed to: {:?}", backup_path);
-        info!("Note: This backup is unencrypted and should be stored securely");
+        log::info!("Unencrypted database backup completed to: {:?}", backup_path);
+        log::info!("Note: This backup is unencrypted and should be stored securely");
         Ok(())
     }
 
@@ -644,31 +643,31 @@ impl Database {
     /// * `password` - Password for encrypted backups (None for unencrypted backups)
     /// * `force_unencrypted_restore` - If true, forces restoration as unencrypted (for data recovery)
     pub fn restore_from_file(&mut self, backup_path: &Path, password: Option<&str>, force_unencrypted_restore: bool) -> Result<()> {
-        info!("Starting restore from file: {:?}", backup_path);
-        info!("Password provided: {}", password.is_some());
-        info!("Force unencrypted restore: {}", force_unencrypted_restore);
+        log::info!("Starting restore from file: {:?}", backup_path);
+        log::info!("Password provided: {}", password.is_some());
+        log::info!("Force unencrypted restore: {}", force_unencrypted_restore);
         
         // Verify the backup file exists
         if !backup_path.exists() {
             return Err(anyhow::anyhow!("Backup file does not exist: {:?}", backup_path));
         }
-        info!("Backup file exists");
+        log::info!("Backup file exists");
 
         // Try to detect if the backup is encrypted by attempting to read it
-        info!("Detecting backup encryption...");
+        log::info!("Detecting backup encryption...");
         let is_encrypted_backup = self.detect_encrypted_backup(backup_path)?;
-        info!("Backup encryption detected: {}", is_encrypted_backup);
+        log::info!("Backup encryption detected: {}", is_encrypted_backup);
 
         if is_encrypted_backup && password.is_none() && !force_unencrypted_restore {
             return Err(anyhow::anyhow!("Encrypted backup detected but no password provided. Use force_unencrypted_restore=true for data recovery (this will result in an unencrypted database)"));
         }
 
         if is_encrypted_backup && password.is_some() {
-            info!("Using encrypted restore path");
+            log::info!("Using encrypted restore path");
             // Restore encrypted backup
             self.restore_encrypted(backup_path, password.unwrap())
         } else {
-            info!("Using unencrypted restore path");
+            log::info!("Using unencrypted restore path");
             // Restore as unencrypted (either it's unencrypted or we're forcing unencrypted restore)
             self.restore_unencrypted(backup_path)
         }
@@ -691,60 +690,60 @@ impl Database {
 
     /// Restore from an encrypted backup
     fn restore_encrypted(&mut self, backup_path: &Path, password: &str) -> Result<()> {
-        info!("Starting encrypted restore from: {:?}", backup_path);
+        log::info!("Starting encrypted restore from: {:?}", backup_path);
         
         // Verify password matches our current encryption config
-        info!("Verifying password...");
+        log::info!("Verifying password...");
         if !self.encryption_config.verify_password(password) {
             return Err(anyhow::anyhow!("Password does not match current encryption configuration"));
         }
-        info!("Password verified successfully");
+        log::info!("Password verified successfully");
 
         // Create a connection to the backup file
         let backup_conn = Connection::open(backup_path)?;
-        info!("Successfully opened encrypted backup connection");
+        log::info!("Successfully opened encrypted backup connection");
         
         // Create a backup object (backup -> current)
-        info!("Creating backup object for encrypted restore...");
+        log::info!("Creating backup object for encrypted restore...");
         let backup = rusqlite::backup::Backup::new(&backup_conn, &mut self.conn)?;
         
         // Perform the restore
-        info!("Performing encrypted restore...");
+        log::info!("Performing encrypted restore...");
         backup.run_to_completion(5, std::time::Duration::from_millis(100), Some(|progress| {
-            info!("Encrypted restore progress: {} pages", progress.pagecount);
+            log::info!("Encrypted restore progress: {} pages", progress.pagecount);
         }))?;
         
-        info!("Encrypted database restore completed from: {:?}", backup_path);
+        log::info!("Encrypted database restore completed from: {:?}", backup_path);
         Ok(())
     }
 
     /// Restore from an unencrypted backup
     fn restore_unencrypted(&mut self, backup_path: &Path) -> Result<()> {
-        info!("Starting unencrypted restore from: {:?}", backup_path);
+        log::info!("Starting unencrypted restore from: {:?}", backup_path);
         
         // Create a connection to the backup file
         let backup_conn = Connection::open(backup_path)?;
-        info!("Successfully opened backup connection");
+        log::info!("Successfully opened backup connection");
         
         // Collect data from backup
-        info!("Collecting data from backup...");
+        log::info!("Collecting data from backup...");
         let categories_data = self.collect_categories_from_backup(&backup_conn)?;
-        info!("Collected {} categories from backup", categories_data.len());
+        log::info!("Collected {} categories from backup", categories_data.len());
         
         let flows_data = self.collect_flows_from_backup(&backup_conn)?;
-        info!("Collected {} flows from backup", flows_data.len());
+        log::info!("Collected {} flows from backup", flows_data.len());
         
         let user_settings_data = self.collect_user_settings_from_backup(&backup_conn)?;
-        info!("User settings collected: {}", user_settings_data.is_some());
+        log::info!("User settings collected: {}", user_settings_data.is_some());
         
         // Start a transaction and disable foreign key constraints
-        info!("Starting transaction and disabling foreign key constraints...");
+        log::info!("Starting transaction and disabling foreign key constraints...");
         let tx = self.conn.transaction()?;
         tx.execute("PRAGMA foreign_keys = OFF", [])?;
         
         // Verify foreign key constraints are actually disabled
         let fk_enabled: i64 = tx.query_row("PRAGMA foreign_keys", [], |row| row.get(0))?;
-        info!("Foreign key constraints status after disabling: {}", fk_enabled);
+        log::info!("Foreign key constraints status after disabling: {}", fk_enabled);
         
         // Check if there are any foreign key constraints in the database
         let fk_count: i64 = tx.query_row(
@@ -752,26 +751,26 @@ impl Database {
             [], 
             |row| row.get(0)
         ).unwrap_or(0);
-        info!("Number of foreign key constraints on flows table: {}", fk_count);
+        log::info!("Number of foreign key constraints on flows table: {}", fk_count);
         
         // Clear current database
-        info!("Clearing current database...");
+        log::info!("Clearing current database...");
         match tx.execute("DELETE FROM flows", []) {
-            Ok(_) => info!("Flows cleared"),
+            Ok(_) => log::info!("Flows cleared"),
             Err(e) => {
                 error!("Failed to clear flows: {}", e);
                 return Err(e.into());
             }
         }
         match tx.execute("DELETE FROM categories", []) {
-            Ok(_) => info!("Categories cleared"),
+            Ok(_) => log::info!("Categories cleared"),
             Err(e) => {
                 error!("Failed to clear categories: {}", e);
                 return Err(e.into());
             }
         }
         match tx.execute("DELETE FROM user_settings", []) {
-            Ok(_) => info!("User settings cleared"),
+            Ok(_) => log::info!("User settings cleared"),
             Err(e) => {
                 error!("Failed to clear user settings: {}", e);
                 return Err(e.into());
@@ -779,31 +778,31 @@ impl Database {
         }
         
         // Insert collected data
-        info!("Inserting categories...");
+        log::info!("Inserting categories...");
         Self::insert_categories_transaction(&categories_data, &tx)?;
-        info!("Categories inserted successfully");
+        log::info!("Categories inserted successfully");
         
-        info!("Inserting flows...");
+        log::info!("Inserting flows...");
         Self::insert_flows_transaction(&flows_data, &tx)?;
-        info!("Flows inserted successfully");
+        log::info!("Flows inserted successfully");
         
-        info!("Inserting user settings...");
+        log::info!("Inserting user settings...");
         Self::insert_user_settings_transaction(&user_settings_data, &tx)?;
-        info!("User settings inserted successfully");
+        log::info!("User settings inserted successfully");
         
         // Re-enable foreign key constraints
-        info!("Re-enabling foreign key constraints...");
+        log::info!("Re-enabling foreign key constraints...");
         tx.execute("PRAGMA foreign_keys = ON", [])?;
-        info!("Foreign key constraints re-enabled");
+        log::info!("Foreign key constraints re-enabled");
         
         // Commit the transaction
-        info!("Committing transaction...");
+        log::info!("Committing transaction...");
         tx.commit()?;
-        info!("Transaction committed successfully");
+        log::info!("Transaction committed successfully");
         
-        info!("Unencrypted database restore completed from: {:?}", backup_path);
+        log::info!("Unencrypted database restore completed from: {:?}", backup_path);
         if self.is_encrypted() {
-            info!("Note: Database is now unencrypted. Consider re-enabling encryption for security.");
+            log::info!("Note: Database is now unencrypted. Consider re-enabling encryption for security.");
         }
         Ok(())
     }
@@ -868,7 +867,7 @@ impl Database {
 
     /// Insert categories data into transaction
     fn insert_categories_transaction(categories_data: &[(String, String, String, String, i64, i64)], tx: &Connection) -> Result<()> {
-        info!("Inserting {} categories into transaction", categories_data.len());
+        log::info!("Inserting {} categories into transaction", categories_data.len());
         for (id, name, flow_type, fields, tax_deduction_allowed, tax_deduction_default) in categories_data {
             tx.execute(
                 "INSERT INTO categories (id, name, flow_type, fields, tax_deduction_allowed, tax_deduction_default)
@@ -876,13 +875,13 @@ impl Database {
                 params![id, name, flow_type, fields, tax_deduction_allowed, tax_deduction_default],
             )?;
         }
-        info!("All categories inserted successfully");
+        log::info!("All categories inserted successfully");
         Ok(())
     }
 
     /// Insert flows data into transaction
     fn insert_flows_transaction(flows_data: &[(String, String, f64, String, String, String, String, Option<i64>)], tx: &Connection) -> Result<()> {
-        info!("Inserting {} flows into transaction", flows_data.len());
+        log::info!("Inserting {} flows into transaction", flows_data.len());
         for (id, date, amount, category_id, description, linked_flows, custom_fields, tax_deductible) in flows_data {
             tx.execute(
                 "INSERT INTO flows (id, date, amount, category_id, description, linked_flows, custom_fields, tax_deductible)
@@ -890,7 +889,7 @@ impl Database {
                 params![id, date, amount, category_id, description, linked_flows, custom_fields, tax_deductible],
             )?;
         }
-        info!("All flows inserted successfully");
+        log::info!("All flows inserted successfully");
         Ok(())
     }
 
@@ -964,7 +963,7 @@ impl Database {
         
         // Write to file
         std::fs::write(dump_path, dump_content)?;
-        info!("SQL dump completed to: {:?}", dump_path);
+        log::info!("SQL dump completed to: {:?}", dump_path);
         Ok(())
     }
 
@@ -992,7 +991,7 @@ impl Database {
         // Commit the transaction
         tx.commit()?;
         
-        info!("Database restore from SQL dump completed from: {:?}", dump_path);
+        log::info!("Database restore from SQL dump completed from: {:?}", dump_path);
         Ok(())
     }
 

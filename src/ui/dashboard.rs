@@ -1,6 +1,6 @@
 use eframe::egui;
 use chrono::{Local, Datelike};
-use log::warn;
+use log::{info, warn, error};
 
 use crate::models::{Flow, Category};
 use crate::utils;
@@ -41,7 +41,7 @@ impl Dashboard {
                         crate::models::FlowType::Expense => total_expenses += flow.amount,
                     }
                 } else {
-                    warn!("Flow {} (date: {}) has no matching category (category_id: {})", 
+                    log::warn!("Flow {} (date: {}) has no matching category (category_id: {})", 
                         flow.id, flow.date, flow.category_id);
                 }
             }

@@ -1,5 +1,6 @@
 use eframe::egui;
 use chrono::Datelike;
+use log::{info, warn, error};
 
 use crate::app::PreftApp;
 use crate::ui::category_flows::show_category_flows;
@@ -166,7 +167,7 @@ pub fn show_main_panel(ui: &mut egui::Ui, app: &mut PreftApp) {
             if year_filter != app.user_settings.get_year_filter() {
                 app.user_settings.set_year_filter(year_filter);
                 if let Err(e) = app.db.save_user_settings(&app.user_settings) {
-                    eprintln!("Failed to save user settings: {}", e);
+                    log::error!("Failed to save user settings: {}", e);
                 }
                 // Mark all category flows states for update
                 for state in app.category_flows_state.values_mut() {

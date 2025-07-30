@@ -6,7 +6,7 @@ use crate::models::{Category, FieldType, CategoryField, FlowType, TaxDeductionIn
 use std::collections::HashMap;
 
 pub fn run_migrations(conn: &mut Connection) -> Result<()> {
-    info!("Starting database migrations...");
+    log::info!("Starting database migrations...");
 
     // Create migrations table if it doesn't exist
     conn.execute(
@@ -18,7 +18,7 @@ pub fn run_migrations(conn: &mut Connection) -> Result<()> {
         )",
         [],
     )?;
-    info!("Migrations table verified/created");
+    log::info!("Migrations table verified/created");
 
     // Get list of applied migrations
     let applied_migrations: Vec<(String, i64)> = {
@@ -29,7 +29,7 @@ pub fn run_migrations(conn: &mut Connection) -> Result<()> {
         .collect::<Result<Vec<(String, i64)>, _>>()?
     };
     
-    info!("Previously applied migrations: {:?}", applied_migrations);
+    log::info!("Previously applied migrations: {:?}", applied_migrations);
 
     // Check if we've already run the number to float migration
     let migration_name = "convert_number_to_float";
@@ -40,7 +40,7 @@ pub fn run_migrations(conn: &mut Connection) -> Result<()> {
     };
 
     if !migration_applied {
-        info!("Running migration: {} (version {})", migration_name, migration_version);
+        log::info!("Running migration: {} (version {})", migration_name, migration_version);
         
         // Start transaction
         let tx = conn.transaction()?;
@@ -54,31 +54,31 @@ pub fn run_migrations(conn: &mut Connection) -> Result<()> {
                         "INSERT INTO migrations (name, version) VALUES (?, ?)",
                         params![migration_name, migration_version],
                     )?;
-                    info!("Migration record added to database");
+                    log::info!("Migration record added to database");
                     
                     // Commit transaction
                     tx.commit()?;
-                    info!("Successfully completed migration: {} (version {})", migration_name, migration_version);
+                    log::info!("Successfully completed migration: {} (version {})", migration_name, migration_version);
                 } else {
-                    error!("Migration validation failed, rolling back");
+                    log::error!("Migration validation failed, rolling back");
                     return Err(anyhow::anyhow!("Migration validation failed"));
                 }
             }
             Err(e) => {
-                error!("Failed to run migration {}: {}", migration_name, e);
+                log::error!("Failed to run migration {}: {}", migration_name, e);
                 return Err(e);
             }
         }
     } else {
-        info!("Migration {} (version {}) already applied, skipping", migration_name, migration_version);
+        log::info!("Migration {} (version {}) already applied, skipping", migration_name, migration_version);
     }
 
-    info!("Database migrations completed successfully");
+    log::info!("Database migrations completed successfully");
     Ok(())
 }
 
 fn convert_number_to_float(conn: &Connection) -> Result<()> {
-    info!("Starting conversion of Number fields to Float...");
+    log::info!("Starting conversion of Number fields to Float...");
 
     // Get all categories
     let mut stmt = conn.prepare("SELECT id, name, flow_type, fields, tax_deduction_allowed, tax_deduction_default FROM categories")?;
@@ -130,7 +130,7 @@ fn convert_number_to_float(conn: &Connection) -> Result<()> {
                 field.field_type = FieldType::Float;
                 modified = true;
                 fields_converted += 1;
-                info!("Converting field '{}' in category '{}' from Number to Float", 
+                log::info!("Converting field '{}' in category '{}' from Number to Float", 
                     field.name, category.name);
             }
         }
@@ -144,21 +144,21 @@ fn convert_number_to_float(conn: &Connection) -> Result<()> {
             )?;
             modified_categories += 1;
             total_fields_converted += fields_converted;
-            info!("Updated category '{}' with {} converted fields", 
+            log::info!("Updated category '{}' with {} converted fields", 
                 category.name, fields_converted);
         }
     }
 
-    info!("Migration summary:");
-    info!("- Total categories processed: {}", total_categories);
-    info!("- Categories modified: {}", modified_categories);
-    info!("- Total fields converted: {}", total_fields_converted);
+    log::info!("Migration summary:");
+    log::info!("- Total categories processed: {}", total_categories);
+    log::info!("- Categories modified: {}", modified_categories);
+    log::info!("- Total fields converted: {}", total_fields_converted);
 
     Ok(())
 }
 
 fn validate_migration(conn: &Connection) -> Result<bool> {
-    info!("Validating migration...");
+    log::info!("Validating migration...");
     
     // Check if any Number fields still exist
     let mut stmt = conn.prepare("SELECT fields FROM categories")?;
@@ -174,21 +174,21 @@ fn validate_migration(conn: &Connection) -> Result<bool> {
         for field in fields {
             #[allow(deprecated)]
             if field.field_type == FieldType::Number {
-                error!("Validation failed: Found unconverted Number field '{}'", field.name);
+                log::error!("Validation failed: Found unconverted Number field '{}'", field.name);
                 return Ok(false);
             }
         }
     }
 
-    info!("Migration validation successful");
+    log::info!("Migration validation successful");
     Ok(true)
 }
 
 /// Compares two category field schemas to determine if a migration is needed
 pub fn has_schema_changes(old_category: &Category, new_category: &Category) -> bool {
-    info!("Comparing schemas for category '{}':", new_category.name);
-    info!("Old category fields: {:?}", old_category.fields);
-    info!("New category fields: {:?}", new_category.fields);
+    log::info!("Comparing schemas for category '{}':", new_category.name);
+    log::info!("Old category fields: {:?}", old_category.fields);
+    log::info!("New category fields: {:?}", new_category.fields);
 
     // Create maps of field names to their types for easy comparison
     let old_fields: HashMap<&str, &FieldType> = old_category.fields
@@ -201,8 +201,8 @@ pub fn has_schema_changes(old_category: &Category, new_category: &Category) -> b
         .map(|f| (f.name.as_str(), &f.field_type))
         .collect();
 
-    info!("Old field types: {:?}", old_fields);
-    info!("New field types: {:?}", new_fields);
+    log::info!("Old field types: {:?}", old_fields);
+    log::info!("New field types: {:?}", new_fields);
 
     let mut has_changes = false;
     let mut changes = Vec::new();
@@ -212,7 +212,7 @@ pub fn has_schema_changes(old_category: &Category, new_category: &Category) -> b
         if !new_fields.contains_key(field_name) {
             changes.push(format!("Field '{}' was removed", field_name));
             has_changes = true;
-            info!("Field '{}' exists in old schema but not in new", field_name);
+            log::info!("Field '{}' exists in old schema but not in new", field_name);
         }
     }
 
@@ -221,7 +221,7 @@ pub fn has_schema_changes(old_category: &Category, new_category: &Category) -> b
         if !old_fields.contains_key(field_name) {
             changes.push(format!("Field '{}' was added", field_name));
             has_changes = true;
-            info!("Field '{}' exists in new schema but not in old", field_name);
+            log::info!("Field '{}' exists in new schema but not in old", field_name);
         }
     }
 
@@ -232,20 +232,20 @@ pub fn has_schema_changes(old_category: &Category, new_category: &Category) -> b
                 changes.push(format!("Field '{}' type changed from {:?} to {:?}", 
                     field_name, old_type, new_type));
                 has_changes = true;
-                info!("Field '{}' type changed: {:?} -> {:?}", field_name, old_type, new_type);
+                log::info!("Field '{}' type changed: {:?} -> {:?}", field_name, old_type, new_type);
             } else {
-                info!("Field '{}' type unchanged: {:?}", field_name, old_type);
+                log::info!("Field '{}' type unchanged: {:?}", field_name, old_type);
             }
         }
     }
 
     if has_changes {
-        info!("Schema changes detected for category '{}':", new_category.name);
+        log::info!("Schema changes detected for category '{}':", new_category.name);
         for change in changes {
-            info!("- {}", change);
+            log::info!("- {}", change);
         }
     } else {
-        info!("No schema changes detected for category '{}'", new_category.name);
+        log::info!("No schema changes detected for category '{}'", new_category.name);
     }
 
     has_changes
@@ -255,11 +255,11 @@ pub fn has_schema_changes(old_category: &Category, new_category: &Category) -> b
 pub fn migrate_flows_to_new_category(conn: &Connection, old_category: &Category, new_category: &Category) -> Result<()> {
     // Check if we actually need to migrate
     if !has_schema_changes(old_category, new_category) {
-        info!("No schema changes detected for category '{}', skipping flow migration", new_category.name);
+        log::info!("No schema changes detected for category '{}', skipping flow migration", new_category.name);
         return Ok(());
     }
 
-    info!("Starting flow migration for category '{}'", new_category.name);
+    log::info!("Starting flow migration for category '{}'", new_category.name);
     
     // Get all flows for this category
     let mut stmt = conn.prepare(
@@ -301,7 +301,7 @@ pub fn migrate_flows_to_new_category(conn: &Connection, old_category: &Category,
             custom_fields.remove(&field_name);
             modified = true;
             skipped_fields += 1;
-            info!("Removed field '{}' from flow {}", field_name, flow_id);
+            log::info!("Removed field '{}' from flow {}", field_name, flow_id);
         }
 
         // Validate and convert field values based on new types
@@ -323,13 +323,13 @@ pub fn migrate_flows_to_new_category(conn: &Connection, old_category: &Category,
                             // Convert float to integer
                             custom_fields.insert(field_name.clone(), (float_val as i64).to_string());
                             modified = true;
-                            info!("Converted field '{}' to integer in flow {}", field_name, flow_id);
+                            log::info!("Converted field '{}' to integer in flow {}", field_name, flow_id);
                         } else {
                             // Invalid value, remove it
                             custom_fields.remove(field_name);
                             modified = true;
                             skipped_fields += 1;
-                            warn!("Invalid integer value '{}' for field '{}' in category '{}'", 
+                            log::warn!("Invalid integer value '{}' for field '{}' in category '{}'", 
                                 value, field_name, new_category.name);
                         }
                     },
@@ -340,13 +340,13 @@ pub fn migrate_flows_to_new_category(conn: &Connection, old_category: &Category,
                             // Convert integer to float
                             custom_fields.insert(field_name.clone(), (int_val as f64).to_string());
                             modified = true;
-                            info!("Converted field '{}' to float in flow {}", field_name, flow_id);
+                            log::info!("Converted field '{}' to float in flow {}", field_name, flow_id);
                         } else {
                             // Invalid value, remove it
                             custom_fields.remove(field_name);
                             modified = true;
                             skipped_fields += 1;
-                            warn!("Invalid float value '{}' for field '{}' in category '{}'", 
+                            log::warn!("Invalid float value '{}' for field '{}' in category '{}'", 
                                 value, field_name, new_category.name);
                         }
                     },
@@ -357,13 +357,13 @@ pub fn migrate_flows_to_new_category(conn: &Connection, old_category: &Category,
                             // Value is valid, update with cleaned version
                             custom_fields.insert(field_name.clone(), clean_value);
                             modified = true;
-                            info!("Cleaned currency field '{}' in flow {}", field_name, flow_id);
+                            log::info!("Cleaned currency field '{}' in flow {}", field_name, flow_id);
                         } else {
                             // Invalid value, remove it
                             custom_fields.remove(field_name);
                             modified = true;
                             skipped_fields += 1;
-                            warn!("Invalid currency value '{}' for field '{}' in category '{}'", 
+                            log::warn!("Invalid currency value '{}' for field '{}' in category '{}'", 
                                 value, field_name, new_category.name);
                         }
                     },
@@ -382,7 +382,7 @@ pub fn migrate_flows_to_new_category(conn: &Connection, old_category: &Category,
                                 custom_fields.remove(field_name);
                                 modified = true;
                                 skipped_fields += 1;
-                                warn!("Invalid boolean value '{}' for field '{}' in category '{}'", 
+                                log::warn!("Invalid boolean value '{}' for field '{}' in category '{}'", 
                                     value, field_name, new_category.name);
                             }
                         }
@@ -395,13 +395,13 @@ pub fn migrate_flows_to_new_category(conn: &Connection, old_category: &Category,
                             // Convert to standard format
                             custom_fields.insert(field_name.clone(), date.format("%Y-%m-%d").to_string());
                             modified = true;
-                            info!("Converted date field '{}' to standard format in flow {}", field_name, flow_id);
+                            log::info!("Converted date field '{}' to standard format in flow {}", field_name, flow_id);
                         } else {
                             // Invalid value, remove it
                             custom_fields.remove(field_name);
                             modified = true;
                             skipped_fields += 1;
-                            warn!("Invalid date value '{}' for field '{}' in category '{}'", 
+                            log::warn!("Invalid date value '{}' for field '{}' in category '{}'", 
                                 value, field_name, new_category.name);
                         }
                     },
@@ -423,10 +423,10 @@ pub fn migrate_flows_to_new_category(conn: &Connection, old_category: &Category,
         }
     }
 
-    info!("Flow migration summary for category '{}':", new_category.name);
-    info!("- Total flows processed: {}", total_flows);
-    info!("- Flows modified: {}", migrated_flows);
-    info!("- Fields skipped/removed: {}", skipped_fields);
+    log::info!("Flow migration summary for category '{}':", new_category.name);
+    log::info!("- Total flows processed: {}", total_flows);
+    log::info!("- Flows modified: {}", migrated_flows);
+    log::info!("- Fields skipped/removed: {}", skipped_fields);
 
     Ok(())
 } 
