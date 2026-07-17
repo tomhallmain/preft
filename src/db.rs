@@ -114,6 +114,24 @@ impl Database {
         Ok(db)
     }
 
+    /// Mark this test database as encrypted using an explicit password/salt
+    /// pair, without touching the OS keyring. Mirrors what `initialize_encryption`
+    /// does, minus the `EncryptionConfig::save()` keyring write. Callers that
+    /// need two databases to share the same derived key (e.g. simulating a
+    /// backup restored onto a different database) must pass the same salt to
+    /// both.
+    pub fn enable_encryption_for_test(&mut self, password: &str, salt: &str) -> Result<()> {
+        let password_hash = DatabaseEncryption::hash_password(password, salt);
+        self.encryption_config = EncryptionConfig {
+            enabled: true,
+            password_hash: Some(password_hash),
+            salt: Some(salt.to_string()),
+            database_encrypted: true,
+        };
+        self.encryption = Some(DatabaseEncryption::new(password, salt)?);
+        Ok(())
+    }
+
     /// Check if the database is encrypted by attempting to read a test value
     pub fn detect_encryption_state(&self) -> bool {
         // Try to read from user_settings table - if it fails with a specific error,
