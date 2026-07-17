@@ -721,16 +721,30 @@ impl Database {
 
     /// Detect if a backup file is encrypted
     pub fn detect_encrypted_backup(&self, backup_path: &Path) -> Result<bool> {
-        // Try to open the backup file and read a simple query
+        // Only the *value* of user_settings.settings_json is ever encrypted
+        // (AES-GCM, then base64-encoded) -- the database file itself is a
+        // normal, fully readable SQLite file either way. So merely being able
+        // to query the user_settings table (the old check here) can't tell
+        // encrypted and unencrypted backups apart; both are always readable.
+        //
+        // Instead, inspect the actual value: unencrypted settings are always
+        // `serde_json::to_string`'d from a struct, so they always start with
+        // '{'. Base64 (the standard alphabet used by `encrypt_data`) never
+        // produces '{' as a character, so an encrypted value never starts
+        // with '{' either. This distinguishes the two reliably.
         match Connection::open(backup_path) {
             Ok(conn) => {
-                // Try to read from user_settings table
-                match conn.query_row("SELECT COUNT(*) FROM user_settings", [], |row| row.get::<_, i64>(0)) {
-                    Ok(_) => Ok(false), // Successfully read, likely unencrypted
-                    Err(_) => Ok(true),  // Failed to read, likely encrypted
+                match conn.query_row(
+                    "SELECT settings_json FROM user_settings WHERE id = 1",
+                    [],
+                    |row| row.get::<_, String>(0),
+                ) {
+                    Ok(settings_json) => Ok(!settings_json.trim_start().starts_with('{')),
+                    Err(rusqlite::Error::QueryReturnedNoRows) => Ok(false), // no settings saved yet
+                    Err(_) => Ok(true), // table/file unreadable or malformed
                 }
             }
-            Err(_) => Ok(true), // Can't open, assume encrypted
+            Err(_) => Ok(true), // Can't open, assume encrypted/corrupt
         }
     }
 
@@ -952,22 +966,36 @@ impl Database {
 
     /// Create a SQL dump of the database to a text file
     pub fn dump_to_sql_file(&self, dump_path: &Path) -> Result<()> {
-        // Get all tables
+        // Get all tables. `migrations` is excluded: it's internal bookkeeping
+        // for this specific database instance, not user data -- each database
+        // determines its own migration state via `run_migrations()`, the same
+        // way the binary backup/restore path never touches this table either.
         let mut tables = self.conn.prepare(
-            "SELECT name FROM sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%'"
+            "SELECT name FROM sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%' AND name != 'migrations'"
         )?;
-        
+
         let mut dump_content = String::new();
-        
+
         // Add schema for each table
         for table_row in tables.query_map([], |row| row.get::<_, String>(0))? {
             let table_name = table_row?;
-            let schema = self.conn.query_row(
+            let schema: String = self.conn.query_row(
                 "SELECT sql FROM sqlite_master WHERE type='table' AND name = ?",
                 params![table_name],
                 |row| row.get::<_, String>(0)
             )?;
-            dump_content.push_str(&format!("{}\n\n", schema));
+            // `sqlite_master.sql` doesn't include a trailing semicolon, and
+            // doesn't preserve "IF NOT EXISTS" even if the original CREATE
+            // TABLE statement used it. Without a semicolon, restore_from_sql_file's
+            // `split(';')` would glue all table schemas together into a single
+            // statement; without "IF NOT EXISTS", restoring into an
+            // already-initialized database (the normal case) would fail.
+            let schema = if schema.starts_with("CREATE TABLE IF NOT EXISTS") {
+                schema
+            } else {
+                schema.replacen("CREATE TABLE ", "CREATE TABLE IF NOT EXISTS ", 1)
+            };
+            dump_content.push_str(&format!("{};\n\n", schema));
         }
         
         // Add data for each table

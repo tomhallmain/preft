@@ -4,11 +4,10 @@
 //! Three tests here (`detect_encrypted_backup_true_for_encrypted_backup`,
 //! `restore_from_file_on_encrypted_backup_correctly_restores_settings`, and
 //! `restore_from_sql_file_succeeds_against_an_already_initialized_database`)
-//! assert the *desired/correct* behavior for three known, currently-unfixed
-//! bugs, not what the code does today -- so they are expected to FAIL until
-//! those bugs are fixed. See the comment on each for the root cause. Once a
-//! fix lands, its corresponding test flipping to green is the confirmation
-//! the fix worked.
+//! are regression tests for three bugs found while writing this file (broken
+//! encrypted-backup detection/restore, and a `restore_from_sql_file` schema
+//! bug) and since fixed in `src/db.rs`. See each test's comment for the root
+//! cause that was fixed.
 
 use preft::db::Database;
 use preft::encryption::DatabaseEncryption;
@@ -144,17 +143,16 @@ fn detect_encrypted_backup_true_for_malformed_file() {
 
 #[test]
 fn detect_encrypted_backup_true_for_encrypted_backup() {
-    // EXPECTED TO CURRENTLY FAIL. This app only encrypts the *value* of the
-    // `user_settings.settings_json` column (AES-GCM+base64), never the
-    // database file itself. `detect_encrypted_backup` decides "encrypted or
-    // not" by running `SELECT COUNT(*) FROM user_settings`, which succeeds
-    // either way -- the column is still valid TEXT whether its content is
-    // readable JSON or ciphertext. So it currently always reports `false`
-    // for backups this app produces, even ones made via the encrypted path
-    // (it returns `false` here today; this asserts the desired `true`).
+    // Regression test: `detect_encrypted_backup` used to decide "encrypted or
+    // not" by checking whether `user_settings` was queryable at all, which is
+    // true either way -- only the column *value* is encrypted, not the file.
+    // It now inspects the value itself (ciphertext never starts with '{',
+    // unlike plaintext JSON), so this requires an actual saved settings row
+    // to have anything to detect.
     let salt = DatabaseEncryption::generate_salt();
     let mut db = test_db();
     db.enable_encryption_for_test("s3cret", &salt).expect("set up encryption");
+    db.save_user_settings(&UserSettings::new()).expect("save settings");
 
     let backup_dir = tempfile::tempdir().expect("create tempdir");
     let backup_path = backup_dir.path().join("backup.db");
@@ -169,19 +167,14 @@ fn detect_encrypted_backup_true_for_encrypted_backup() {
 
 #[test]
 fn restore_from_file_on_encrypted_backup_correctly_restores_settings() {
-    // EXPECTED TO CURRENTLY FAIL, as a consequence of the bug asserted in
-    // `detect_encrypted_backup_true_for_encrypted_backup` above: because
-    // detection currently misreports encrypted backups as unencrypted,
-    // `restore_from_file` always takes the unencrypted restore path, ignoring
-    // any password passed in, and writes the raw ciphertext into the target
-    // as if it were plaintext JSON. `load_user_settings` then fails to parse
-    // it and silently falls back to `UserSettings::new()` (year_filter =
-    // current year) instead of the originally-saved value (2021) asserted
-    // below. Once detection is fixed, `restore_from_file` should route to
-    // `restore_encrypted`, which requires the restore target to already have
-    // matching encryption configured (see `enable_encryption_for_test` on
-    // db2) -- this mirrors needing to unlock/configure encryption with the
-    // right password before restoring in real usage.
+    // Regression test for the same `detect_encrypted_backup` bug fixed in
+    // `detect_encrypted_backup_true_for_encrypted_backup` above: before the
+    // fix, detection misreported this backup as unencrypted, so
+    // `restore_from_file` took the unencrypted path and silently reset
+    // settings to defaults instead of decrypting them. The restore target
+    // must already have matching encryption configured (same password/salt)
+    // for `restore_encrypted`'s password check to succeed, mirroring needing
+    // to unlock/configure encryption before restoring in real usage.
     let salt = DatabaseEncryption::generate_salt();
     let mut db1 = test_db();
     db1.enable_encryption_for_test("s3cret", &salt).expect("set up encryption");
@@ -243,17 +236,11 @@ fn dump_to_sql_file_produces_expected_inserts_with_escaped_quotes() {
 
 #[test]
 fn restore_from_sql_file_succeeds_against_an_already_initialized_database() {
-    // EXPECTED TO CURRENTLY FAIL. Unlike `restore_unencrypted` (the binary
-    // backup path), `restore_from_sql_file` never clears existing rows before
-    // replaying the dumped INSERT statements -- it just executes whatever
-    // schema/data statements were dumped. Every `Database::new()`/
-    // `new_for_test()` instance already has exactly one bookkeeping row in
-    // the `migrations` table (id=1, from its own `run_migrations()` call
-    // during construction), so replaying a dump taken from another such
-    // database currently always collides on that primary key -- even with
-    // zero categories/flows involved. This asserts the desired end state:
-    // restoring a dump into an already-initialized database should succeed
-    // and leave the target containing the dumped data.
+    // Regression test: `dump_to_sql_file` used to omit "IF NOT EXISTS" and
+    // the trailing semicolon SQLite strips from `sqlite_master.sql`'s stored
+    // CREATE TABLE text, so `restore_from_sql_file`'s `split(';')` glued all
+    // table schemas into one statement, and replaying it against an
+    // already-initialized database (the normal case) failed outright.
     let mut db1 = test_db();
     db1.save_category(&category_with_fields("cat-1", vec![])).expect("save category");
 
