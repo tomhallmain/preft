@@ -12,19 +12,57 @@ pub enum TimePeriod {
     Custom(NaiveDate, NaiveDate),
 }
 
-impl Default for TimePeriod {
-    fn default() -> Self {
-        let now = chrono::Local::now().naive_local();
-        let month = now.month();
-        
+impl TimePeriod {
+    /// Core of `Default::default`, parameterized on "today" so it's testable
+    /// without depending on the wall clock.
+    fn default_for(today: NaiveDate) -> Self {
         // If we're significantly after tax time (after April), default to this year
         // Otherwise default to last year
-        if month > 4 {
+        if today.month() > 4 {
             TimePeriod::ThisYear
         } else {
             TimePeriod::LastYear
         }
     }
+
+    /// Whether `date` falls within this period, as of `today`. `LastYear` is
+    /// the half-open range [Jan 1 last year, Jan 1 this year); `ThisYear` is
+    /// [Jan 1 this year, today] inclusive; `Custom` is inclusive on both ends.
+    fn contains(&self, date: NaiveDate, today: NaiveDate) -> bool {
+        match self {
+            TimePeriod::LastYear => {
+                let start = today.with_month(1).unwrap().with_day(1).unwrap();
+                let end = start.with_year(start.year() - 1).unwrap();
+                date >= end && date < start
+            },
+            TimePeriod::ThisYear => {
+                let start = today.with_month(1).unwrap().with_day(1).unwrap();
+                date >= start && date <= today
+            },
+            TimePeriod::Custom(start, end) => {
+                date >= *start && date <= *end
+            },
+        }
+    }
+}
+
+impl Default for TimePeriod {
+    fn default() -> Self {
+        Self::default_for(chrono::Local::now().naive_local().date())
+    }
+}
+
+/// Groups flows by the value of a custom field. Flows that don't have the
+/// field set are silently excluded from the result entirely (not grouped
+/// under any key) -- this mirrors the report's existing display behavior.
+fn group_flows_by_field<'a>(flows: &[&'a Flow], field_name: &str) -> HashMap<String, Vec<&'a Flow>> {
+    let mut grouped: HashMap<String, Vec<&'a Flow>> = HashMap::new();
+    for flow in flows {
+        if let Some(value) = flow.custom_fields.get(field_name) {
+            grouped.entry(value.clone()).or_default().push(flow);
+        }
+    }
+    grouped
 }
 
 #[derive(Debug, Clone, PartialEq, Copy)]
@@ -139,25 +177,9 @@ impl ReportGenerator {
 
     pub fn generate_report(&self, request: &ReportRequest) -> Result<Vec<u8>, Box<dyn std::error::Error>> {
         // Filter flows based on time period
+        let today = chrono::Local::now().date_naive();
         let filtered_flows: Vec<&Flow> = self.flows.iter()
-            .filter(|flow| {
-                match &request.time_period {
-                    TimePeriod::LastYear => {
-                        let now = chrono::Local::now().date_naive();
-                        let start = now.with_month(1).unwrap().with_day(1).unwrap();
-                        let end = start.with_year(start.year() - 1).unwrap();
-                        flow.date >= end && flow.date < start
-                    },
-                    TimePeriod::ThisYear => {
-                        let now = chrono::Local::now().date_naive();
-                        let start = now.with_month(1).unwrap().with_day(1).unwrap();
-                        flow.date >= start && flow.date <= now
-                    },
-                    TimePeriod::Custom(start, end) => {
-                        flow.date >= *start && flow.date <= *end
-                    },
-                }
-            })
+            .filter(|flow| request.time_period.contains(flow.date, today))
             .collect();
 
         // Sort flows by date (TODO: Add support for sorting by amount with higher priority)
@@ -242,14 +264,7 @@ impl ReportGenerator {
 
             // Group flows if requested
             if let Some(group_by) = &request.group_by {
-                let mut grouped_flows: HashMap<String, Vec<&Flow>> = HashMap::new();
-                for flow in flows {
-                    if let Some(value) = flow.custom_fields.get(group_by) {
-                        grouped_flows.entry(value.clone())
-                            .or_default()
-                            .push(flow);
-                    }
-                }
+                let grouped_flows = group_flows_by_field(flows, group_by);
 
                 // Add each group
                 for (group_value, group_flows) in &grouped_flows {
@@ -345,5 +360,128 @@ impl ReportGenerator {
                 _ => Ok(doc.add_builtin_font(BuiltinFont::TimesRoman)?),
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn flow(id: &str, date: NaiveDate, custom_fields: HashMap<String, String>) -> Flow {
+        Flow {
+            id: id.to_string(),
+            date,
+            amount: 10.0,
+            category_id: "cat-1".to_string(),
+            description: String::new(),
+            linked_flows: Vec::new(),
+            custom_fields,
+            tax_deductible: None,
+        }
+    }
+
+    // --- TimePeriod::default_for ---
+
+    #[test]
+    fn default_for_is_last_year_on_or_before_april() {
+        for month in 1..=4 {
+            let today = NaiveDate::from_ymd_opt(2024, month, 15).unwrap();
+            assert_eq!(TimePeriod::default_for(today), TimePeriod::LastYear, "month {}", month);
+        }
+    }
+
+    #[test]
+    fn default_for_is_this_year_after_april() {
+        for month in 5..=12 {
+            let today = NaiveDate::from_ymd_opt(2024, month, 15).unwrap();
+            assert_eq!(TimePeriod::default_for(today), TimePeriod::ThisYear, "month {}", month);
+        }
+    }
+
+    // --- TimePeriod::contains ---
+
+    #[test]
+    fn last_year_covers_the_full_previous_calendar_year() {
+        let today = NaiveDate::from_ymd_opt(2024, 6, 15).unwrap();
+        let period = TimePeriod::LastYear;
+
+        assert!(period.contains(NaiveDate::from_ymd_opt(2023, 1, 1).unwrap(), today));
+        assert!(period.contains(NaiveDate::from_ymd_opt(2023, 12, 31).unwrap(), today));
+        assert!(!period.contains(NaiveDate::from_ymd_opt(2024, 1, 1).unwrap(), today), "current year's Jan 1 is excluded");
+        assert!(!period.contains(NaiveDate::from_ymd_opt(2022, 12, 31).unwrap(), today), "the year before last is excluded");
+    }
+
+    #[test]
+    fn this_year_covers_january_first_through_today_inclusive() {
+        let today = NaiveDate::from_ymd_opt(2024, 6, 15).unwrap();
+        let period = TimePeriod::ThisYear;
+
+        assert!(period.contains(NaiveDate::from_ymd_opt(2024, 1, 1).unwrap(), today));
+        assert!(period.contains(today, today));
+        assert!(!period.contains(NaiveDate::from_ymd_opt(2024, 6, 16).unwrap(), today), "dates after today are excluded");
+        assert!(!period.contains(NaiveDate::from_ymd_opt(2023, 12, 31).unwrap(), today), "last year is excluded");
+    }
+
+    #[test]
+    fn custom_range_is_inclusive_on_both_ends() {
+        let today = NaiveDate::from_ymd_opt(2024, 6, 15).unwrap();
+        let period = TimePeriod::Custom(
+            NaiveDate::from_ymd_opt(2024, 3, 1).unwrap(),
+            NaiveDate::from_ymd_opt(2024, 3, 31).unwrap(),
+        );
+
+        assert!(period.contains(NaiveDate::from_ymd_opt(2024, 3, 1).unwrap(), today));
+        assert!(period.contains(NaiveDate::from_ymd_opt(2024, 3, 31).unwrap(), today));
+        assert!(!period.contains(NaiveDate::from_ymd_opt(2024, 2, 29).unwrap(), today));
+        assert!(!period.contains(NaiveDate::from_ymd_opt(2024, 4, 1).unwrap(), today));
+    }
+
+    // --- group_flows_by_field ---
+
+    #[test]
+    fn group_flows_by_field_groups_matching_values_together() {
+        let date = NaiveDate::from_ymd_opt(2024, 1, 1).unwrap();
+        let mut fields_a = HashMap::new();
+        fields_a.insert("vendor".to_string(), "Acme".to_string());
+        let mut fields_b = HashMap::new();
+        fields_b.insert("vendor".to_string(), "Acme".to_string());
+        let mut fields_c = HashMap::new();
+        fields_c.insert("vendor".to_string(), "Other".to_string());
+
+        let flow_a = flow("a", date, fields_a);
+        let flow_b = flow("b", date, fields_b);
+        let flow_c = flow("c", date, fields_c);
+        let flows: Vec<&Flow> = vec![&flow_a, &flow_b, &flow_c];
+
+        let grouped = group_flows_by_field(&flows, "vendor");
+
+        assert_eq!(grouped.len(), 2);
+        assert_eq!(grouped.get("Acme").unwrap().len(), 2);
+        assert_eq!(grouped.get("Other").unwrap().len(), 1);
+    }
+
+    #[test]
+    fn group_flows_by_field_excludes_flows_missing_the_field() {
+        let date = NaiveDate::from_ymd_opt(2024, 1, 1).unwrap();
+        let mut fields_a = HashMap::new();
+        fields_a.insert("vendor".to_string(), "Acme".to_string());
+        let fields_b = HashMap::new(); // no "vendor" field at all
+
+        let flow_a = flow("a", date, fields_a);
+        let flow_b = flow("b", date, fields_b);
+        let flows: Vec<&Flow> = vec![&flow_a, &flow_b];
+
+        let grouped = group_flows_by_field(&flows, "vendor");
+
+        let total_grouped_flows: usize = grouped.values().map(|v| v.len()).sum();
+        assert_eq!(total_grouped_flows, 1, "the flow missing the field should not appear in any group");
+        assert_eq!(grouped.get("Acme").unwrap().len(), 1);
+    }
+
+    #[test]
+    fn group_flows_by_field_empty_input_yields_empty_map() {
+        let flows: Vec<&Flow> = Vec::new();
+        let grouped = group_flows_by_field(&flows, "vendor");
+        assert!(grouped.is_empty());
     }
 } 
