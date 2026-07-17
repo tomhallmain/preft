@@ -1,5 +1,5 @@
 use eframe::egui;
-use chrono::{NaiveDate, Datelike};
+use chrono::NaiveDate;
 
 use crate::models::{Flow, Category};
 use crate::app::PreftApp;
@@ -50,24 +50,18 @@ pub struct FlowEditor {
     flow_data: Flow,
     is_new_flow: bool,
     has_set_focus: bool,
-    date_input: String,
-    date_error: Option<String>,
     amount_input: String,
     description_input: String,
 }
 
 impl FlowEditor {
     pub fn new(flow: Flow, is_new_flow: bool) -> Self {
-        let flow_clone = flow.clone();
-        let date_input = flow_clone.date.to_string();
         Self {
-            flow_data: flow_clone,
-            is_new_flow,
-            has_set_focus: false,
-            date_input,
-            date_error: None,
             amount_input: flow.amount.to_string(),
             description_input: flow.description.clone(),
+            flow_data: flow,
+            is_new_flow,
+            has_set_focus: false,
         }
     }
 
@@ -90,25 +84,10 @@ impl FlowEditor {
                     // Basic flow information
                     ui.horizontal(|ui| {
                         ui.label("Date:");
-                        let _response = ui.add(
-                            egui::TextEdit::singleline(&mut self.date_input)
-                                .hint_text("YYYY-MM-DD")
-                                .desired_width(100.0)
-                        );
-                        
-                        // Show visual feedback about the date format
-                        if !self.date_input.is_empty() && self.date_input.len() != 10 {
-                            let warning = ui.label(egui::RichText::new("⚠")
-                                .color(egui::Color32::from_rgb(200, 100, 0))
-                                .size(16.0));
-                            warning.on_hover_text("Date must be in YYYY-MM-DD format");
-                        }
+                        // A picker guarantees a valid date by construction --
+                        // no free-text parsing/validation needed here at all.
+                        ui.add(egui_extras::DatePickerButton::new(&mut self.flow_data.date));
                     });
-
-                    // Show date error message if it exists
-                    if let Some(error) = &self.date_error {
-                        ui.label(egui::RichText::new(error).color(egui::Color32::RED));
-                    }
 
                     ui.horizontal(|ui| {
                         ui.label("Amount:");
@@ -208,7 +187,13 @@ impl FlowEditor {
                                     let value = app.custom_field_values
                                         .entry(field.name.clone())
                                         .or_insert_with(String::new);
-                                    if ui.text_edit_singleline(value).changed() {
+                                    // A picker guarantees a valid date by construction,
+                                    // unlike the old free-text field which stored
+                                    // whatever was typed with no validation at all.
+                                    let mut date = NaiveDate::parse_from_str(value, "%Y-%m-%d")
+                                        .unwrap_or_else(|_| chrono::Local::now().date_naive());
+                                    if ui.add(egui_extras::DatePickerButton::new(&mut date)).changed() {
+                                        *value = date.format("%Y-%m-%d").to_string();
                                         self.flow_data.custom_fields.insert(field.name.clone(), value.clone());
                                     }
                                 },
@@ -258,14 +243,7 @@ impl FlowEditor {
                     // Save/Cancel buttons
                     ui.horizontal(|ui| {
                         if ui.button("Save").clicked() || ui.input(|i| i.key_pressed(egui::Key::Enter)) {
-                            // Parse date only when saving
-                            if let Ok(date) = NaiveDate::parse_from_str(&self.date_input, "%Y-%m-%d") {
-                                self.flow_data.date = date;
-                                self.date_error = None;
-                                app.save_flow(self.flow_data.clone());
-                            } else {
-                                self.date_error = Some("Invalid date format or date. Please use YYYY-MM-DD".to_string());
-                            }
+                            app.save_flow(self.flow_data.clone());
                         }
                         if ui.button("Cancel").clicked() || ui.input(|i| i.key_pressed(egui::Key::Escape)) {
                             app.cancel_flow_edit();
@@ -346,10 +324,10 @@ mod tests {
     #[test]
     fn new_editor_initializes_text_inputs_from_flow_data() {
         let editor = FlowEditor::new(sample_flow(), true);
-        assert_eq!(editor.date_input, "2024-03-14");
         assert_eq!(editor.amount_input, "12.5");
         assert_eq!(editor.description_input, "Test flow");
         assert_eq!(editor.get_flow_data().id, "flow-1");
+        assert_eq!(editor.get_flow_data().date, NaiveDate::from_ymd_opt(2024, 3, 14).unwrap());
     }
 
     #[test]

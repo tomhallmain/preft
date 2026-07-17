@@ -5,6 +5,7 @@ edition = "2024"
 
 [dependencies]
 eframe = { version = "0.24.1", features = ["default"] }
+egui_extras = { version = "0.24", features = ["datepicker"] }
 chrono = { version = "0.4.31", features = ["serde"] }
 uuid = { version = "1.6.1", features = ["v4", "serde"] }
 serde = { version = "1.0", features = ["derive"] }
