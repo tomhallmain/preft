@@ -315,7 +315,7 @@ impl Database {
 
         match result {
             Ok(category) => Ok(Some(category)),
-            Err(rusqlite::Error::ExecuteReturnedResults) => Ok(None),
+            Err(rusqlite::Error::QueryReturnedNoRows) => Ok(None),
             Err(e) => Err(e.into()),
         }
     }
@@ -324,9 +324,10 @@ impl Database {
         // Start transaction
         let tx = self.conn.transaction()?;
 
-        // Get the old category before making any changes
-        let old_category = Self::get_category(&tx, &category.id)?
-            .ok_or_else(|| anyhow::anyhow!("Category not found: {}", category.id))?;
+        // Get the old category before making any changes, if one exists.
+        // A brand-new category has no prior row, so there's nothing to
+        // diff/migrate against.
+        let old_category = Self::get_category(&tx, &category.id)?;
 
         // Save the category
         let fields_json = serde_json::to_string(&category.fields)?;
@@ -343,9 +344,11 @@ impl Database {
             ],
         )?;
 
-        // Run migrations if needed
-        if migrations::has_schema_changes(&old_category, category) {
-            migrations::migrate_flows_to_new_category(&tx, &old_category, category)?;
+        // Run migrations if needed (only applies when updating an existing category)
+        if let Some(old_category) = old_category {
+            if migrations::has_schema_changes(&old_category, category) {
+                migrations::migrate_flows_to_new_category(&tx, &old_category, category)?;
+            }
         }
 
         // Commit transaction
