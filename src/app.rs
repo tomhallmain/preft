@@ -2,16 +2,13 @@ use anyhow::Result;
 use eframe::egui;
 use std::collections::HashMap;
 use uuid::Uuid;
-use std::fs::File;
-use std::io::Write;
-use chrono::{Datelike, Local};
 use log::{info, warn, error};
 
 use crate::models::{Flow, Category, CategoryField, get_default_categories};
 use crate::ui::{show_main_panel, FlowEditorState};
 use crate::db::Database;
 use crate::settings::UserSettings;
-use crate::reporting::{ReportRequest, ReportGenerator};
+use crate::reporting::ReportRequest;
 use crate::ui::dashboard::Dashboard;
 use crate::ui::category_flows::CategoryFlowsState;
 use rusqlite::Connection;
@@ -267,37 +264,6 @@ impl PreftApp {
     pub fn set_editing_flow(&mut self, flow: Flow) {
         self.editing_flow = Some(flow.clone());
         self.flow_editor_state.set_editor(flow, false);
-    }
-
-    pub fn generate_report(&self) -> Result<Vec<u8>, Box<dyn std::error::Error>> {
-        let generator = ReportGenerator::new(
-            self.flows.clone(),
-            self.categories.iter()
-                .map(|cat| (cat.id.clone(), (cat.name.clone(), cat.flow_type.clone())))
-                .collect()
-        );
-        generator.generate_report(&self.report_request)
-    }
-
-    fn get_category_fields(&self) -> Vec<CategoryField> {
-        self.get_selected_category()
-            .map(|c| c.fields.clone())
-            .unwrap_or_default()
-    }
-
-    fn show_group_by_selection(ui: &mut egui::Ui, group_by: &mut Option<String>, fields: &[CategoryField]) {
-        ui.horizontal(|ui| {
-            ui.label("Group By:");
-            egui::ComboBox::from_id_source("group_by")
-                .selected_text(group_by.as_deref().unwrap_or("None"))
-                .show_ui(ui, |ui| {
-                    ui.selectable_value(group_by, None, "None");
-                    for field in fields {
-                        ui.selectable_value(group_by, 
-                            Some(field.name.clone()), &field.name);
-                    }
-                });
-        });
     }
 
     pub fn delete_category(&mut self, category_id: String) {
@@ -737,182 +703,7 @@ impl eframe::App for PreftApp {
 
             // Show report dialog if needed
             if self.show_report_dialog {
-                let mut report_request = self.report_request.clone();
-                let fields = self.get_category_fields();
-                let flows = self.flows.clone();
-                let mut should_close = false;
-                let mut pdf_data = None;
-                let mut show_window = true;
-                
-                egui::Window::new("Generate Report")
-                    .open(&mut show_window)
-                    .show(ctx, |ui| {
-                        ui.heading("Report Settings");
-                        
-                        // Time period selection
-                        ui.horizontal(|ui| {
-                            ui.label("Time Period:");
-                            egui::ComboBox::from_id_source("time_period")
-                                .selected_text(format!("{:?}", self.report_request.time_period))
-                                .show_ui(ui, |ui| {
-                                    ui.selectable_value(&mut self.report_request.time_period, crate::reporting::TimePeriod::LastYear, "Last Year");
-                                    ui.selectable_value(&mut self.report_request.time_period, crate::reporting::TimePeriod::ThisYear, "This Year");
-                                    ui.selectable_value(&mut self.report_request.time_period, crate::reporting::TimePeriod::Custom(
-                                        chrono::Local::now().date_naive().with_month(1).unwrap().with_day(1).unwrap(),
-                                        chrono::Local::now().date_naive()
-                                    ), "Custom");
-                                });
-                        });
-
-                        // Group by selection
-                        Self::show_group_by_selection(ui, &mut report_request.group_by, &fields);
-
-                        // Title and subtitle
-                        ui.horizontal(|ui| {
-                            ui.label("Title:");
-                            ui.text_edit_singleline(&mut report_request.title);
-                        });
-                        ui.horizontal(|ui| {
-                            ui.label("Subtitle:");
-                            ui.text_edit_singleline(&mut report_request.subtitle);
-                        });
-
-                        // Font settings
-                        ui.separator();
-                        ui.heading("Font Settings");
-
-                        // Title font
-                        ui.horizontal(|ui| {
-                            ui.label("Title Font:");
-                            egui::ComboBox::from_id_source("title_font")
-                                .selected_text(report_request.font_settings.title_font.get_display_name())
-                                .show_ui(ui, |ui| {
-                                    for variant in [
-                                        crate::reporting::FontVariant::RobotoRegular,
-                                        crate::reporting::FontVariant::RobotoBold,
-                                        crate::reporting::FontVariant::RobotoItalic,
-                                        crate::reporting::FontVariant::RobotoBoldItalic,
-                                        crate::reporting::FontVariant::TimesRegular,
-                                        crate::reporting::FontVariant::TimesBold,
-                                        crate::reporting::FontVariant::TimesItalic,
-                                        crate::reporting::FontVariant::TimesBoldItalic,
-                                    ] {
-                                        ui.selectable_value(
-                                            &mut report_request.font_settings.title_font,
-                                            variant,
-                                            variant.get_display_name(),
-                                        );
-                                    }
-                                });
-                        });
-
-                        // Subtitle font
-                        ui.horizontal(|ui| {
-                            ui.label("Subtitle Font:");
-                            egui::ComboBox::from_id_source("subtitle_font")
-                                .selected_text(report_request.font_settings.subtitle_font.get_display_name())
-                                .show_ui(ui, |ui| {
-                                    for variant in [
-                                        crate::reporting::FontVariant::RobotoRegular,
-                                        crate::reporting::FontVariant::RobotoBold,
-                                        crate::reporting::FontVariant::RobotoItalic,
-                                        crate::reporting::FontVariant::RobotoBoldItalic,
-                                        crate::reporting::FontVariant::TimesRegular,
-                                        crate::reporting::FontVariant::TimesBold,
-                                        crate::reporting::FontVariant::TimesItalic,
-                                        crate::reporting::FontVariant::TimesBoldItalic,
-                                    ] {
-                                        ui.selectable_value(
-                                            &mut report_request.font_settings.subtitle_font,
-                                            variant,
-                                            variant.get_display_name(),
-                                        );
-                                    }
-                                });
-                        });
-
-                        // Header font
-                        ui.horizontal(|ui| {
-                            ui.label("Header Font:");
-                            egui::ComboBox::from_id_source("header_font")
-                                .selected_text(report_request.font_settings.header_font.get_display_name())
-                                .show_ui(ui, |ui| {
-                                    for variant in [
-                                        crate::reporting::FontVariant::RobotoRegular,
-                                        crate::reporting::FontVariant::RobotoBold,
-                                        crate::reporting::FontVariant::RobotoItalic,
-                                        crate::reporting::FontVariant::RobotoBoldItalic,
-                                        crate::reporting::FontVariant::TimesRegular,
-                                        crate::reporting::FontVariant::TimesBold,
-                                        crate::reporting::FontVariant::TimesItalic,
-                                        crate::reporting::FontVariant::TimesBoldItalic,
-                                    ] {
-                                        ui.selectable_value(
-                                            &mut report_request.font_settings.header_font,
-                                            variant,
-                                            variant.get_display_name(),
-                                        );
-                                    }
-                                });
-                        });
-
-                        // Body font
-                        ui.horizontal(|ui| {
-                            ui.label("Body Font:");
-                            egui::ComboBox::from_id_source("body_font")
-                                .selected_text(report_request.font_settings.body_font.get_display_name())
-                                .show_ui(ui, |ui| {
-                                    for variant in [
-                                        crate::reporting::FontVariant::RobotoRegular,
-                                        crate::reporting::FontVariant::RobotoBold,
-                                        crate::reporting::FontVariant::RobotoItalic,
-                                        crate::reporting::FontVariant::RobotoBoldItalic,
-                                        crate::reporting::FontVariant::TimesRegular,
-                                        crate::reporting::FontVariant::TimesBold,
-                                        crate::reporting::FontVariant::TimesItalic,
-                                        crate::reporting::FontVariant::TimesBoldItalic,
-                                    ] {
-                                        ui.selectable_value(
-                                            &mut report_request.font_settings.body_font,
-                                            variant,
-                                            variant.get_display_name(),
-                                        );
-                                    }
-                                });
-                        });
-
-                        // Generate button
-                        if ui.button("Generate Report").clicked() {
-                            let generator = ReportGenerator::new(
-                                flows,
-                                self.categories.iter()
-                                    .map(|cat| (cat.id.clone(), (cat.name.clone(), cat.flow_type.clone())))
-                                    .collect()
-                            );
-                            if let Ok(data) = generator.generate_report(&report_request) {
-                                pdf_data = Some(data);
-                                should_close = true;
-                            }
-                        }
-                    });
-                
-                if should_close || !show_window {
-                    if let Some(data) = pdf_data {
-                        // Save the PDF file
-                        if let Some(path) = rfd::FileDialog::new()
-                            .set_title("Save Report")
-                            .set_file_name("financial_report.pdf")
-                            .save_file() {
-                            if let Ok(mut file) = File::create(path) {
-                                if let Err(e) = file.write_all(&data) {
-                                    log::error!("Failed to save PDF: {}", e);
-                                }
-                            }
-                        }
-                    }
-                    self.report_request = report_request;
-                    self.show_report_dialog = false;
-                }
+                crate::ui::show_report_dialog(ctx, self);
             }
 
             // Show backup dialog if needed
