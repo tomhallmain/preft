@@ -6,12 +6,45 @@ use crate::models::{Flow, Category};
 use crate::app::PreftApp;
 use crate::utils;
 
+#[derive(Debug, Clone, Copy, PartialEq)]
+enum SortColumn {
+    Date,
+    Amount,
+    Description,
+}
+
+impl SortColumn {
+    /// Direction a column starts in the first time it's selected.
+    fn default_ascending(self) -> bool {
+        match self {
+            SortColumn::Date => false,        // newest first
+            SortColumn::Amount => false,      // largest first
+            SortColumn::Description => true,  // A-Z
+        }
+    }
+}
+
+/// Sorts flows in place by the given column/direction. `Description` sorts
+/// case-insensitively so e.g. "apple" comes before "Banana".
+fn sort_flows(flows: &mut [Flow], column: SortColumn, ascending: bool) {
+    flows.sort_by(|a, b| {
+        let ordering = match column {
+            SortColumn::Date => a.date.cmp(&b.date),
+            SortColumn::Amount => a.amount.partial_cmp(&b.amount).unwrap_or(std::cmp::Ordering::Equal),
+            SortColumn::Description => a.description.to_lowercase().cmp(&b.description.to_lowercase()),
+        };
+        if ascending { ordering } else { ordering.reverse() }
+    });
+}
+
 pub struct CategoryFlowsState {
     last_year_total: f64,
     this_year_total: f64,
     current_month_total: f64,
     tracking_ratio: Option<f64>,
     needs_update: bool,
+    sort_column: SortColumn,
+    sort_ascending: bool,
 }
 
 impl CategoryFlowsState {
@@ -22,11 +55,24 @@ impl CategoryFlowsState {
             current_month_total: 0.0,
             tracking_ratio: None,
             needs_update: true,
+            sort_column: SortColumn::Date,
+            sort_ascending: false, // newest first, matching the table's prior hardcoded behavior
         }
     }
 
     pub fn mark_for_update(&mut self) {
         self.needs_update = true;
+    }
+
+    /// Clicking the active column's header flips its direction; clicking a
+    /// different column switches to it at that column's default direction.
+    fn toggle_sort(&mut self, column: SortColumn) {
+        if self.sort_column == column {
+            self.sort_ascending = !self.sort_ascending;
+        } else {
+            self.sort_column = column;
+            self.sort_ascending = column.default_ascending();
+        }
     }
 
     pub fn update_totals(&mut self, flows: &[Flow], category: &Category) {
@@ -115,7 +161,24 @@ pub fn show_category_flows(ui: &mut egui::Ui, app: &mut PreftApp, category: &Cat
     show_flows_table(ui, app, category);
 }
 
+/// Renders a clickable column header, with a ▲/▼ indicator when it's the
+/// active sort column, and returns the response so the caller can check
+/// `.clicked()`.
+fn sortable_header(ui: &mut egui::Ui, label: &str, column: SortColumn, active_column: SortColumn, ascending: bool) -> egui::Response {
+    let text = if column == active_column {
+        format!("{} {}", label, if ascending { "\u{25B2}" } else { "\u{25BC}" })
+    } else {
+        label.to_string()
+    };
+    ui.button(text)
+}
+
 fn show_flows_table(ui: &mut egui::Ui, app: &mut PreftApp, category: &Category) {
+    let (sort_column, sort_ascending) = {
+        let state = app.get_category_flows_state(&category.id);
+        (state.sort_column, state.sort_ascending)
+    };
+
     egui::ScrollArea::vertical()
         .id_source(format!("flows_scroll_{}", category.id))
         .auto_shrink([false, false])
@@ -123,10 +186,18 @@ fn show_flows_table(ui: &mut egui::Ui, app: &mut PreftApp, category: &Category) 
             egui::Grid::new(format!("flows_grid_{}", category.id))
                 .striped(true)
                 .show(ui, |ui| {
-                    // Header row
-                    ui.label("Date");
-                    ui.label("Amount");
-                    ui.label("Description");
+                    // Header row -- Date/Amount/Description are sortable by
+                    // clicking; custom fields aren't (they're typed per-field
+                    // and would need type-aware comparisons, unlike these three).
+                    if sortable_header(ui, "Date", SortColumn::Date, sort_column, sort_ascending).clicked() {
+                        app.get_category_flows_state(&category.id).toggle_sort(SortColumn::Date);
+                    }
+                    if sortable_header(ui, "Amount", SortColumn::Amount, sort_column, sort_ascending).clicked() {
+                        app.get_category_flows_state(&category.id).toggle_sort(SortColumn::Amount);
+                    }
+                    if sortable_header(ui, "Description", SortColumn::Description, sort_column, sort_ascending).clicked() {
+                        app.get_category_flows_state(&category.id).toggle_sort(SortColumn::Description);
+                    }
                     if category.tax_deduction.deduction_allowed {
                         ui.label("Tax Deductible");
                     }
@@ -151,8 +222,7 @@ fn show_flows_table(ui: &mut egui::Ui, app: &mut PreftApp, category: &Category) 
                         .cloned()
                         .collect();
                     
-                    // Sort flows by date in descending order (newest first)
-                    flows.sort_by(|a, b| b.date.cmp(&a.date));
+                    sort_flows(&mut flows, sort_column, sort_ascending);
 
                     for flow in flows {
                         // Date cell
@@ -338,5 +408,91 @@ mod tests {
         assert_eq!(state.current_month_total, 0.0);
         assert_eq!(state.tracking_ratio, None);
         assert!(state.needs_update);
+        assert_eq!(state.sort_column, SortColumn::Date);
+        assert!(!state.sort_ascending, "should default to newest-first, matching the table's prior hardcoded behavior");
+    }
+
+    // --- toggle_sort ---
+
+    #[test]
+    fn toggle_sort_flips_direction_when_clicking_the_active_column_again() {
+        let mut state = CategoryFlowsState::new(); // Date, descending
+        state.toggle_sort(SortColumn::Date);
+        assert_eq!(state.sort_column, SortColumn::Date);
+        assert!(state.sort_ascending);
+
+        state.toggle_sort(SortColumn::Date);
+        assert!(!state.sort_ascending);
+    }
+
+    #[test]
+    fn toggle_sort_switches_column_and_resets_to_its_default_direction() {
+        let mut state = CategoryFlowsState::new(); // Date, descending
+        state.toggle_sort(SortColumn::Date); // Date, ascending now
+
+        state.toggle_sort(SortColumn::Description);
+        assert_eq!(state.sort_column, SortColumn::Description);
+        assert!(state.sort_ascending, "Description defaults to ascending (A-Z)");
+
+        state.toggle_sort(SortColumn::Amount);
+        assert_eq!(state.sort_column, SortColumn::Amount);
+        assert!(!state.sort_ascending, "Amount defaults to descending (largest first)");
+    }
+
+    // --- sort_flows ---
+
+    #[test]
+    fn sort_flows_by_date() {
+        let mut flows = vec![
+            flow("cat-1", NaiveDate::from_ymd_opt(2024, 3, 1).unwrap(), 10.0),
+            flow("cat-1", NaiveDate::from_ymd_opt(2024, 1, 1).unwrap(), 20.0),
+            flow("cat-1", NaiveDate::from_ymd_opt(2024, 2, 1).unwrap(), 30.0),
+        ];
+
+        sort_flows(&mut flows, SortColumn::Date, true);
+        assert_eq!(flows.iter().map(|f| f.date.month()).collect::<Vec<_>>(), vec![1, 2, 3]);
+
+        sort_flows(&mut flows, SortColumn::Date, false);
+        assert_eq!(flows.iter().map(|f| f.date.month()).collect::<Vec<_>>(), vec![3, 2, 1]);
+    }
+
+    #[test]
+    fn sort_flows_by_amount() {
+        let date = NaiveDate::from_ymd_opt(2024, 1, 1).unwrap();
+        let mut flows = vec![
+            flow("cat-1", date, 30.0),
+            flow("cat-1", date, 10.0),
+            flow("cat-1", date, 20.0),
+        ];
+
+        sort_flows(&mut flows, SortColumn::Amount, true);
+        assert_eq!(flows.iter().map(|f| f.amount).collect::<Vec<_>>(), vec![10.0, 20.0, 30.0]);
+
+        sort_flows(&mut flows, SortColumn::Amount, false);
+        assert_eq!(flows.iter().map(|f| f.amount).collect::<Vec<_>>(), vec![30.0, 20.0, 10.0]);
+    }
+
+    #[test]
+    fn sort_flows_by_description_is_case_insensitive() {
+        let date = NaiveDate::from_ymd_opt(2024, 1, 1).unwrap();
+        let mut flows = vec![
+            flow_with_description("cat-1", date, "Banana"),
+            flow_with_description("cat-1", date, "apple"),
+            flow_with_description("cat-1", date, "cherry"),
+        ];
+
+        sort_flows(&mut flows, SortColumn::Description, true);
+        assert_eq!(
+            flows.iter().map(|f| f.description.as_str()).collect::<Vec<_>>(),
+            vec!["apple", "Banana", "cherry"],
+            "case-insensitive ascending should put 'apple' before 'Banana', unlike a raw byte-order sort"
+        );
+    }
+
+    fn flow_with_description(category_id: &str, date: NaiveDate, description: &str) -> Flow {
+        Flow {
+            description: description.to_string(),
+            ..flow(category_id, date, 0.0)
+        }
     }
 } 
