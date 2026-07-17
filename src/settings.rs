@@ -107,4 +107,81 @@ impl UserSettings {
     pub fn get_auto_backup_encrypted(&self) -> Option<bool> {
         self.auto_backup_encrypted
     }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn backup_entry(file_path: &str, success: bool) -> BackupEntry {
+        BackupEntry {
+            timestamp: Utc::now(),
+            file_path: file_path.to_string(),
+            file_size: None,
+            success,
+            error_message: None,
+        }
+    }
+
+    #[test]
+    fn new_defaults_to_current_year_filter_and_empty_state() {
+        let settings = UserSettings::new();
+        assert_eq!(settings.get_year_filter(), Some(chrono::Local::now().year()));
+        assert!(settings.backup_history.is_empty());
+        assert!(!settings.is_auto_backup_enabled());
+        assert_eq!(settings.get_auto_backup_directory(), None);
+    }
+
+    #[test]
+    fn toggle_category_visibility_round_trips() {
+        let mut settings = UserSettings::new();
+        assert!(!settings.is_category_hidden("groceries"));
+
+        settings.toggle_category_visibility("groceries".to_string());
+        assert!(settings.is_category_hidden("groceries"));
+
+        settings.toggle_category_visibility("groceries".to_string());
+        assert!(!settings.is_category_hidden("groceries"));
+    }
+
+    #[test]
+    fn year_filter_round_trips() {
+        let mut settings = UserSettings::new();
+        settings.set_year_filter(Some(2020));
+        assert_eq!(settings.get_year_filter(), Some(2020));
+
+        settings.set_year_filter(None);
+        assert_eq!(settings.get_year_filter(), None);
+    }
+
+    #[test]
+    fn backup_history_caps_at_100_entries_evicting_oldest_first() {
+        let mut settings = UserSettings::new();
+        for i in 0..101 {
+            settings.add_backup_entry(backup_entry(&format!("backup_{}", i), true));
+        }
+
+        assert_eq!(settings.backup_history.len(), 100);
+        assert_eq!(settings.backup_history.first().unwrap().file_path, "backup_1");
+        assert_eq!(settings.backup_history.last().unwrap().file_path, "backup_100");
+    }
+
+    #[test]
+    fn get_last_successful_backup_skips_trailing_failures() {
+        let mut settings = UserSettings::new();
+        settings.add_backup_entry(backup_entry("ok_1", true));
+        settings.add_backup_entry(backup_entry("fail_1", false));
+        settings.add_backup_entry(backup_entry("ok_2", true));
+        settings.add_backup_entry(backup_entry("fail_2", false));
+
+        let last_success = settings.get_last_successful_backup().unwrap();
+        assert_eq!(last_success.file_path, "ok_2");
+    }
+
+    #[test]
+    fn get_last_successful_backup_none_when_no_successes() {
+        let mut settings = UserSettings::new();
+        settings.add_backup_entry(backup_entry("fail_1", false));
+        assert!(settings.get_last_successful_backup().is_none());
+    }
 } 

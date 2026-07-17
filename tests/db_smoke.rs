@@ -26,6 +26,13 @@ fn user_settings_round_trip_on_isolated_db() {
 #[test]
 fn flow_round_trip_on_isolated_db() {
     let conn = Connection::open_in_memory().expect("open in-memory db");
+    // The flows table has a FOREIGN KEY on category_id, and this build enforces
+    // foreign keys by default. Saving a real category first isn't an option
+    // here (Database::save_category can't insert a brand-new category id yet —
+    // see known issue), so disable enforcement for this connection, same as
+    // Database's own backup/restore code does when load order can't satisfy it.
+    conn.execute("PRAGMA foreign_keys = OFF", [])
+        .expect("disable foreign keys");
     let db = Database::new_for_test(conn).expect("initialize test db");
 
     let flow = Flow {

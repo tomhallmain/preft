@@ -337,4 +337,78 @@ pub fn get_default_categories() -> Vec<Category> {
             },
         },
     ]
-} 
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::collections::HashSet;
+
+    fn field(name: &str) -> CategoryField {
+        CategoryField {
+            name: name.to_string(),
+            field_type: FieldType::Text,
+            required: false,
+            default_value: None,
+        }
+    }
+
+    #[test]
+    fn display_name_leaves_capitalized_single_word_unchanged() {
+        assert_eq!(field("Employer").display_name(), "Employer");
+    }
+
+    #[test]
+    fn display_name_capitalizes_lowercase_single_word() {
+        assert_eq!(field("employer").display_name(), "Employer");
+    }
+
+    #[test]
+    fn display_name_formats_snake_case_to_title_case() {
+        assert_eq!(field("pay_period").display_name(), "Pay Period");
+    }
+
+    #[test]
+    fn display_name_formats_capitalized_snake_case() {
+        // Starts uppercase but still contains an underscore, so it still
+        // needs splitting/reformatting per the "contains '_'" rule.
+        assert_eq!(field("Tax_Year").display_name(), "Tax Year");
+    }
+
+    #[test]
+    fn display_name_leaves_non_alphabetic_leading_char_unchanged() {
+        assert_eq!(field("123abc").display_name(), "123abc");
+    }
+
+    #[test]
+    fn display_name_handles_empty_name() {
+        assert_eq!(field("").display_name(), "");
+    }
+
+    #[test]
+    fn default_categories_have_unique_non_empty_ids() {
+        let categories = get_default_categories();
+        assert!(!categories.is_empty());
+
+        let ids: HashSet<&str> = categories.iter().map(|c| c.id.as_str()).collect();
+        assert_eq!(ids.len(), categories.len(), "default category ids must be unique");
+        assert!(categories.iter().all(|c| !c.id.is_empty() && !c.name.is_empty()));
+    }
+
+    #[test]
+    fn default_categories_include_both_flow_types() {
+        let categories = get_default_categories();
+        assert!(categories.iter().any(|c| c.flow_type == FlowType::Income));
+        assert!(categories.iter().any(|c| c.flow_type == FlowType::Expense));
+    }
+
+    #[test]
+    fn category_new_defaults_to_income_with_no_tax_deduction() {
+        let category = Category::new("Freelance".to_string());
+        assert_eq!(category.name, "Freelance");
+        assert_eq!(category.flow_type, FlowType::Income);
+        assert!(category.fields.is_empty());
+        assert!(!category.tax_deduction.deduction_allowed);
+    }
+}
+ 
