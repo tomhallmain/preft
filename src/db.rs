@@ -89,6 +89,31 @@ impl Database {
         Database { conn, encryption: None, encryption_config }
     }
 
+    /// Build a fully-initialized database (schema + migrations) against an
+    /// arbitrary connection, for use in tests.
+    ///
+    /// Unlike `new()`/`new_minimal()`/`from_connection()`, this never touches
+    /// the user's real `~/.preft/preft.db` file and never reads or writes the
+    /// OS keyring (it uses `EncryptionConfig::default()` in memory instead of
+    /// `EncryptionConfig::load()`). Pass `Connection::open_in_memory()` for a
+    /// fully isolated database, or a `Connection::open(path)` pointed at a
+    /// temp-file path for tests that need a real file on disk (e.g. backup /
+    /// restore round trips).
+    ///
+    /// Default categories and default user settings are intentionally *not*
+    /// seeded here, so tests start from an empty, deterministic schema and
+    /// create exactly the fixtures they need.
+    pub fn new_for_test(conn: Connection) -> Result<Self> {
+        let mut db = Database {
+            conn,
+            encryption: None,
+            encryption_config: EncryptionConfig::default(),
+        };
+        db.initialize()?;
+        migrations::run_migrations(&mut db.conn)?;
+        Ok(db)
+    }
+
     /// Check if the database is encrypted by attempting to read a test value
     pub fn detect_encryption_state(&self) -> bool {
         // Try to read from user_settings table - if it fails with a specific error,
