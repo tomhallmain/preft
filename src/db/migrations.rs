@@ -429,4 +429,395 @@ pub fn migrate_flows_to_new_category(conn: &Connection, old_category: &Category,
     log::info!("- Fields skipped/removed: {}", skipped_fields);
 
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn field(name: &str, field_type: FieldType) -> CategoryField {
+        CategoryField { name: name.to_string(), field_type, required: false, default_value: None }
+    }
+
+    fn category(id: &str, fields: Vec<CategoryField>) -> Category {
+        Category {
+            id: id.to_string(),
+            name: format!("Category {}", id),
+            flow_type: FlowType::Expense,
+            parent_id: None,
+            fields,
+            tax_deduction: TaxDeductionInfo { deduction_allowed: false, default_value: false },
+        }
+    }
+
+    // --- has_schema_changes ---
+
+    #[test]
+    fn has_schema_changes_false_for_identical_schemas() {
+        let fields = vec![field("amount", FieldType::Currency)];
+        let old = category("cat-1", fields.clone());
+        let new = category("cat-1", fields);
+        assert!(!has_schema_changes(&old, &new));
+    }
+
+    #[test]
+    fn has_schema_changes_false_for_two_empty_schemas() {
+        let old = category("cat-1", vec![]);
+        let new = category("cat-1", vec![]);
+        assert!(!has_schema_changes(&old, &new));
+    }
+
+    #[test]
+    fn has_schema_changes_true_when_field_added() {
+        let old = category("cat-1", vec![]);
+        let new = category("cat-1", vec![field("amount", FieldType::Currency)]);
+        assert!(has_schema_changes(&old, &new));
+    }
+
+    #[test]
+    fn has_schema_changes_true_when_field_removed() {
+        let old = category("cat-1", vec![field("amount", FieldType::Currency)]);
+        let new = category("cat-1", vec![]);
+        assert!(has_schema_changes(&old, &new));
+    }
+
+    #[test]
+    fn has_schema_changes_true_when_field_type_changed() {
+        let old = category("cat-1", vec![field("amount", FieldType::Integer)]);
+        let new = category("cat-1", vec![field("amount", FieldType::Float)]);
+        assert!(has_schema_changes(&old, &new));
+    }
+
+    // --- migrate_flows_to_new_category ---
+    //
+    // These use a minimal standalone `flows` table (just the columns the
+    // function touches) rather than going through `Database`, since
+    // `has_schema_changes`/`migrate_flows_to_new_category` are private to this
+    // module and only reachable from in-module tests.
+
+    fn conn_with_flows_table() -> Connection {
+        let conn = Connection::open_in_memory().unwrap();
+        conn.execute(
+            "CREATE TABLE flows (
+                id TEXT PRIMARY KEY,
+                category_id TEXT NOT NULL,
+                custom_fields TEXT NOT NULL
+            )",
+            [],
+        ).unwrap();
+        conn
+    }
+
+    fn insert_flow(conn: &Connection, id: &str, category_id: &str, custom_fields: &HashMap<String, String>) {
+        let json = serde_json::to_string(custom_fields).unwrap();
+        conn.execute(
+            "INSERT INTO flows (id, category_id, custom_fields) VALUES (?, ?, ?)",
+            params![id, category_id, json],
+        ).unwrap();
+    }
+
+    fn read_custom_fields(conn: &Connection, id: &str) -> HashMap<String, String> {
+        let json: String = conn.query_row(
+            "SELECT custom_fields FROM flows WHERE id = ?",
+            params![id],
+            |row| row.get(0),
+        ).unwrap();
+        serde_json::from_str(&json).unwrap()
+    }
+
+    #[test]
+    fn migrate_skips_when_no_schema_changes() {
+        let conn = conn_with_flows_table();
+        let fields_schema = vec![field("amount", FieldType::Currency)];
+        let old = category("cat-1", fields_schema.clone());
+        let new = category("cat-1", fields_schema);
+
+        let mut fields = HashMap::new();
+        fields.insert("amount".to_string(), "$10.00".to_string()); // would be normalized if migration ran
+        insert_flow(&conn, "flow-1", "cat-1", &fields);
+
+        migrate_flows_to_new_category(&conn, &old, &new).unwrap();
+
+        assert_eq!(
+            read_custom_fields(&conn, "flow-1").get("amount"),
+            Some(&"$10.00".to_string()),
+            "value should be untouched when no schema change occurred"
+        );
+    }
+
+    #[test]
+    fn migrate_removes_fields_no_longer_in_schema() {
+        let conn = conn_with_flows_table();
+        let old = category("cat-1", vec![field("amount", FieldType::Currency), field("notes", FieldType::Text)]);
+        let new = category("cat-1", vec![field("amount", FieldType::Currency)]);
+
+        let mut fields = HashMap::new();
+        fields.insert("amount".to_string(), "10.00".to_string());
+        fields.insert("notes".to_string(), "hello".to_string());
+        insert_flow(&conn, "flow-1", "cat-1", &fields);
+
+        migrate_flows_to_new_category(&conn, &old, &new).unwrap();
+
+        let result = read_custom_fields(&conn, "flow-1");
+        assert!(!result.contains_key("notes"));
+        assert_eq!(result.get("amount"), Some(&"10.00".to_string()));
+    }
+
+    #[test]
+    fn migrate_integer_field_valid_value_unchanged() {
+        let conn = conn_with_flows_table();
+        let old = category("cat-1", vec![]);
+        let new = category("cat-1", vec![field("count", FieldType::Integer)]);
+        let mut fields = HashMap::new();
+        fields.insert("count".to_string(), "5".to_string());
+        insert_flow(&conn, "flow-1", "cat-1", &fields);
+
+        migrate_flows_to_new_category(&conn, &old, &new).unwrap();
+
+        assert_eq!(read_custom_fields(&conn, "flow-1").get("count"), Some(&"5".to_string()));
+    }
+
+    #[test]
+    fn migrate_integer_field_converts_float_string() {
+        let conn = conn_with_flows_table();
+        let old = category("cat-1", vec![]);
+        let new = category("cat-1", vec![field("count", FieldType::Integer)]);
+        let mut fields = HashMap::new();
+        fields.insert("count".to_string(), "5.9".to_string());
+        insert_flow(&conn, "flow-1", "cat-1", &fields);
+
+        migrate_flows_to_new_category(&conn, &old, &new).unwrap();
+
+        assert_eq!(
+            read_custom_fields(&conn, "flow-1").get("count"),
+            Some(&"5".to_string()),
+            "float-looking strings truncate toward zero via `as i64`"
+        );
+    }
+
+    #[test]
+    fn migrate_integer_field_removes_invalid_value() {
+        let conn = conn_with_flows_table();
+        let old = category("cat-1", vec![]);
+        let new = category("cat-1", vec![field("count", FieldType::Integer)]);
+        let mut fields = HashMap::new();
+        fields.insert("count".to_string(), "not-a-number".to_string());
+        insert_flow(&conn, "flow-1", "cat-1", &fields);
+
+        migrate_flows_to_new_category(&conn, &old, &new).unwrap();
+
+        assert!(!read_custom_fields(&conn, "flow-1").contains_key("count"));
+    }
+
+    #[test]
+    fn migrate_float_field_converts_integer_string() {
+        let conn = conn_with_flows_table();
+        let old = category("cat-1", vec![]);
+        let new = category("cat-1", vec![field("ratio", FieldType::Float)]);
+        let mut fields = HashMap::new();
+        fields.insert("ratio".to_string(), "3".to_string());
+        insert_flow(&conn, "flow-1", "cat-1", &fields);
+
+        migrate_flows_to_new_category(&conn, &old, &new).unwrap();
+
+        assert_eq!(read_custom_fields(&conn, "flow-1").get("ratio"), Some(&"3".to_string()));
+    }
+
+    #[test]
+    fn migrate_float_field_removes_invalid_value() {
+        let conn = conn_with_flows_table();
+        let old = category("cat-1", vec![]);
+        let new = category("cat-1", vec![field("ratio", FieldType::Float)]);
+        let mut fields = HashMap::new();
+        fields.insert("ratio".to_string(), "not-a-number".to_string());
+        insert_flow(&conn, "flow-1", "cat-1", &fields);
+
+        migrate_flows_to_new_category(&conn, &old, &new).unwrap();
+
+        assert!(!read_custom_fields(&conn, "flow-1").contains_key("ratio"));
+    }
+
+    #[test]
+    fn migrate_currency_field_strips_symbols_and_commas() {
+        let conn = conn_with_flows_table();
+        let old = category("cat-1", vec![]);
+        let new = category("cat-1", vec![field("cost", FieldType::Currency)]);
+        let mut fields = HashMap::new();
+        fields.insert("cost".to_string(), "$1,234.56".to_string());
+        insert_flow(&conn, "flow-1", "cat-1", &fields);
+
+        migrate_flows_to_new_category(&conn, &old, &new).unwrap();
+
+        assert_eq!(read_custom_fields(&conn, "flow-1").get("cost"), Some(&"1234.56".to_string()));
+    }
+
+    #[test]
+    fn migrate_currency_field_removes_invalid_value() {
+        let conn = conn_with_flows_table();
+        let old = category("cat-1", vec![]);
+        let new = category("cat-1", vec![field("cost", FieldType::Currency)]);
+        let mut fields = HashMap::new();
+        fields.insert("cost".to_string(), "free".to_string());
+        insert_flow(&conn, "flow-1", "cat-1", &fields);
+
+        migrate_flows_to_new_category(&conn, &old, &new).unwrap();
+
+        assert!(!read_custom_fields(&conn, "flow-1").contains_key("cost"));
+    }
+
+    #[test]
+    fn migrate_boolean_field_normalizes_truthy_and_falsy_values() {
+        for (input, expected) in [("YES", "true"), ("1", "true"), ("n", "false"), ("False", "false")] {
+            let conn = conn_with_flows_table();
+            let old = category("cat-1", vec![]);
+            let new = category("cat-1", vec![field("covered", FieldType::Boolean)]);
+
+            let mut fields = HashMap::new();
+            fields.insert("covered".to_string(), input.to_string());
+            insert_flow(&conn, "flow-1", "cat-1", &fields);
+
+            migrate_flows_to_new_category(&conn, &old, &new).unwrap();
+
+            assert_eq!(
+                read_custom_fields(&conn, "flow-1").get("covered"),
+                Some(&expected.to_string()),
+                "input {:?} should normalize to {:?}", input, expected
+            );
+        }
+    }
+
+    #[test]
+    fn migrate_boolean_field_removes_invalid_value() {
+        let conn = conn_with_flows_table();
+        let old = category("cat-1", vec![]);
+        let new = category("cat-1", vec![field("covered", FieldType::Boolean)]);
+        let mut fields = HashMap::new();
+        fields.insert("covered".to_string(), "maybe".to_string());
+        insert_flow(&conn, "flow-1", "cat-1", &fields);
+
+        migrate_flows_to_new_category(&conn, &old, &new).unwrap();
+
+        assert!(!read_custom_fields(&conn, "flow-1").contains_key("covered"));
+    }
+
+    #[test]
+    fn migrate_date_field_reformats_us_style_date() {
+        let conn = conn_with_flows_table();
+        let old = category("cat-1", vec![]);
+        let new = category("cat-1", vec![field("when", FieldType::Date)]);
+        let mut fields = HashMap::new();
+        fields.insert("when".to_string(), "03/14/2024".to_string());
+        insert_flow(&conn, "flow-1", "cat-1", &fields);
+
+        migrate_flows_to_new_category(&conn, &old, &new).unwrap();
+
+        assert_eq!(read_custom_fields(&conn, "flow-1").get("when"), Some(&"2024-03-14".to_string()));
+    }
+
+    #[test]
+    fn migrate_date_field_leaves_iso_format_unchanged() {
+        let conn = conn_with_flows_table();
+        let old = category("cat-1", vec![]);
+        let new = category("cat-1", vec![field("when", FieldType::Date)]);
+        let mut fields = HashMap::new();
+        fields.insert("when".to_string(), "2024-03-14".to_string());
+        insert_flow(&conn, "flow-1", "cat-1", &fields);
+
+        migrate_flows_to_new_category(&conn, &old, &new).unwrap();
+
+        assert_eq!(read_custom_fields(&conn, "flow-1").get("when"), Some(&"2024-03-14".to_string()));
+    }
+
+    #[test]
+    fn migrate_date_field_removes_unparseable_value() {
+        let conn = conn_with_flows_table();
+        let old = category("cat-1", vec![]);
+        let new = category("cat-1", vec![field("when", FieldType::Date)]);
+        let mut fields = HashMap::new();
+        fields.insert("when".to_string(), "not-a-date".to_string());
+        insert_flow(&conn, "flow-1", "cat-1", &fields);
+
+        migrate_flows_to_new_category(&conn, &old, &new).unwrap();
+
+        assert!(!read_custom_fields(&conn, "flow-1").contains_key("when"));
+    }
+
+    #[test]
+    fn migrate_leaves_empty_values_untouched_and_unvalidated() {
+        let conn = conn_with_flows_table();
+        let old = category("cat-1", vec![]);
+        let new = category("cat-1", vec![field("count", FieldType::Integer)]);
+        let mut fields = HashMap::new();
+        fields.insert("count".to_string(), "   ".to_string());
+        insert_flow(&conn, "flow-1", "cat-1", &fields);
+
+        migrate_flows_to_new_category(&conn, &old, &new).unwrap();
+
+        // Empty/whitespace-only values are skipped entirely: neither validated nor stripped.
+        assert_eq!(read_custom_fields(&conn, "flow-1").get("count"), Some(&"   ".to_string()));
+    }
+
+    // --- run_migrations ---
+
+    fn conn_with_categories_table() -> Connection {
+        let conn = Connection::open_in_memory().unwrap();
+        conn.execute(
+            "CREATE TABLE categories (
+                id TEXT PRIMARY KEY,
+                name TEXT NOT NULL,
+                flow_type TEXT NOT NULL,
+                fields TEXT NOT NULL,
+                tax_deduction_allowed INTEGER NOT NULL,
+                tax_deduction_default INTEGER NOT NULL
+            )",
+            [],
+        ).unwrap();
+        conn
+    }
+
+    #[test]
+    fn run_migrations_converts_legacy_number_fields_and_is_idempotent() {
+        let mut conn = conn_with_categories_table();
+
+        #[allow(deprecated)]
+        let legacy_fields = vec![CategoryField {
+            name: "legacy_amount".to_string(),
+            field_type: FieldType::Number,
+            required: false,
+            default_value: None,
+        }];
+        let fields_json = serde_json::to_string(&legacy_fields).unwrap();
+        conn.execute(
+            "INSERT INTO categories (id, name, flow_type, fields, tax_deduction_allowed, tax_deduction_default)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
+            params!["cat-1", "Legacy", "Expense", fields_json, 0, 0],
+        ).unwrap();
+
+        run_migrations(&mut conn).expect("first run should succeed");
+
+        let stored_json: String = conn.query_row(
+            "SELECT fields FROM categories WHERE id = 'cat-1'",
+            [],
+            |row| row.get(0),
+        ).unwrap();
+        let stored_fields: Vec<CategoryField> = serde_json::from_str(&stored_json).unwrap();
+        assert_eq!(stored_fields[0].field_type, FieldType::Float, "Number fields should be converted to Float");
+
+        let applied_count: i64 = conn.query_row(
+            "SELECT COUNT(*) FROM migrations WHERE name = 'convert_number_to_float'",
+            [],
+            |row| row.get(0),
+        ).unwrap();
+        assert_eq!(applied_count, 1);
+
+        // Running again should be a no-op: no error, no duplicate migration record.
+        run_migrations(&mut conn).expect("second run should also succeed");
+
+        let applied_count_after_rerun: i64 = conn.query_row(
+            "SELECT COUNT(*) FROM migrations WHERE name = 'convert_number_to_float'",
+            [],
+            |row| row.get(0),
+        ).unwrap();
+        assert_eq!(applied_count_after_rerun, 1, "migration should not be reapplied");
+    }
 } 
