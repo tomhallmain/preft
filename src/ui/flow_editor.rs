@@ -274,4 +274,89 @@ impl FlowEditor {
                 });
             });
     }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::collections::HashMap;
+
+    fn sample_flow() -> Flow {
+        Flow {
+            id: "flow-1".to_string(),
+            date: NaiveDate::from_ymd_opt(2024, 3, 14).unwrap(),
+            amount: 12.5,
+            category_id: "cat-1".to_string(),
+            description: "Test flow".to_string(),
+            linked_flows: Vec::new(),
+            custom_fields: HashMap::new(),
+            tax_deductible: None,
+        }
+    }
+
+    #[test]
+    fn new_state_has_no_editor() {
+        let state = FlowEditorState::new();
+        assert!(!state.has_editor());
+    }
+
+    #[test]
+    fn set_editor_makes_has_editor_true() {
+        let mut state = FlowEditorState::new();
+        state.set_editor(sample_flow(), true);
+        assert!(state.has_editor());
+    }
+
+    #[test]
+    fn take_editor_removes_it_and_returns_it() {
+        let mut state = FlowEditorState::new();
+        state.set_editor(sample_flow(), true);
+
+        let taken = state.take_editor();
+        assert!(taken.is_some());
+        assert!(!state.has_editor());
+        assert_eq!(taken.unwrap().get_flow_data().id, "flow-1");
+    }
+
+    #[test]
+    fn take_editor_on_empty_state_returns_none() {
+        let mut state = FlowEditorState::new();
+        assert!(state.take_editor().is_none());
+    }
+
+    #[test]
+    fn put_editor_back_restores_it() {
+        let mut state = FlowEditorState::new();
+        state.set_editor(sample_flow(), true);
+        let taken = state.take_editor().unwrap();
+
+        assert!(!state.has_editor());
+        state.put_editor_back(taken);
+        assert!(state.has_editor());
+    }
+
+    #[test]
+    fn clear_editor_removes_it() {
+        let mut state = FlowEditorState::new();
+        state.set_editor(sample_flow(), true);
+        state.clear_editor();
+        assert!(!state.has_editor());
+    }
+
+    #[test]
+    fn new_editor_initializes_text_inputs_from_flow_data() {
+        let editor = FlowEditor::new(sample_flow(), true);
+        assert_eq!(editor.date_input, "2024-03-14");
+        assert_eq!(editor.amount_input, "12.5");
+        assert_eq!(editor.description_input, "Test flow");
+        assert_eq!(editor.get_flow_data().id, "flow-1");
+    }
+
+    #[test]
+    fn take_flow_data_consumes_editor_and_returns_flow() {
+        let editor = FlowEditor::new(sample_flow(), false);
+        let flow = editor.take_flow_data();
+        assert_eq!(flow.id, "flow-1");
+        assert_eq!(flow.amount, 12.5);
+    }
 } 

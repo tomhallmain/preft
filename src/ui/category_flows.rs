@@ -1,5 +1,5 @@
 use eframe::egui;
-use chrono::{Local, Datelike};
+use chrono::{Local, NaiveDate, Datelike};
 use log::warn;
 
 use crate::models::{Flow, Category};
@@ -30,13 +30,18 @@ impl CategoryFlowsState {
     }
 
     pub fn update_totals(&mut self, flows: &[Flow], category: &Category) {
+        self.update_totals_as_of(flows, category, Local::now().naive_local().date());
+    }
+
+    /// Core of `update_totals`, parameterized on "today" so it's testable
+    /// without depending on the wall clock.
+    fn update_totals_as_of(&mut self, flows: &[Flow], category: &Category, as_of: NaiveDate) {
         if !self.needs_update {
             return;
         }
 
-        let current_date = Local::now();
-        let current_year = current_date.year();
-        let current_month = current_date.month();
+        let current_year = as_of.year();
+        let current_month = as_of.month();
 
         self.last_year_total = flows.iter()
             .filter(|f| f.category_id == category.id && f.date.year() == current_year - 1)
@@ -49,13 +54,13 @@ impl CategoryFlowsState {
             .sum();
 
         self.current_month_total = flows.iter()
-            .filter(|f| f.category_id == category.id && 
-                    f.date.year() == current_year && 
+            .filter(|f| f.category_id == category.id &&
+                    f.date.year() == current_year &&
                     f.date.month() == current_month)
             .map(|f| f.amount)
             .sum();
 
-        self.tracking_ratio = utils::calculate_tracking_ratio(flows, category);
+        self.tracking_ratio = utils::calculate_tracking_ratio_as_of(flows, category, as_of);
         self.needs_update = false;
     }
 }
@@ -253,4 +258,85 @@ fn show_flows_table(ui: &mut egui::Ui, app: &mut PreftApp, category: &Category) 
                     }
                 });
         });
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::models::{FlowType, TaxDeductionInfo};
+    use std::collections::HashMap;
+
+    fn category(id: &str) -> Category {
+        Category {
+            id: id.to_string(),
+            name: format!("Category {}", id),
+            flow_type: FlowType::Expense,
+            parent_id: None,
+            fields: Vec::new(),
+            tax_deduction: TaxDeductionInfo { deduction_allowed: false, default_value: false },
+        }
+    }
+
+    fn flow(category_id: &str, date: NaiveDate, amount: f64) -> Flow {
+        Flow {
+            id: uuid::Uuid::new_v4().to_string(),
+            date,
+            amount,
+            category_id: category_id.to_string(),
+            description: String::new(),
+            linked_flows: Vec::new(),
+            custom_fields: HashMap::new(),
+            tax_deductible: None,
+        }
+    }
+
+    #[test]
+    fn update_totals_computes_last_year_this_year_and_current_month() {
+        let cat = category("cat-1");
+        let as_of = NaiveDate::from_ymd_opt(2024, 6, 15).unwrap();
+        let flows = vec![
+            flow("cat-1", NaiveDate::from_ymd_opt(2023, 3, 1).unwrap(), 100.0), // last year
+            flow("cat-1", NaiveDate::from_ymd_opt(2024, 1, 1).unwrap(), 50.0),  // this year, not this month
+            flow("cat-1", NaiveDate::from_ymd_opt(2024, 6, 10).unwrap(), 20.0), // this year, this month
+            flow("other-cat", NaiveDate::from_ymd_opt(2024, 6, 10).unwrap(), 999.0), // different category
+        ];
+
+        let mut state = CategoryFlowsState::new();
+        state.update_totals_as_of(&flows, &cat, as_of);
+
+        assert_eq!(state.last_year_total, 100.0);
+        assert_eq!(state.this_year_total, 70.0);
+        assert_eq!(state.current_month_total, 20.0);
+    }
+
+    #[test]
+    fn update_totals_skipped_until_marked_for_update_again() {
+        let cat = category("cat-1");
+        let as_of = NaiveDate::from_ymd_opt(2024, 6, 15).unwrap();
+        let initial_flows = vec![flow("cat-1", as_of, 100.0)];
+
+        let mut state = CategoryFlowsState::new(); // needs_update starts true
+        state.update_totals_as_of(&initial_flows, &cat, as_of);
+        assert_eq!(state.this_year_total, 100.0);
+
+        // Totals shouldn't change on a second call without mark_for_update,
+        // even though the flows passed in are different.
+        let different_flows = vec![flow("cat-1", as_of, 500.0)];
+        state.update_totals_as_of(&different_flows, &cat, as_of);
+        assert_eq!(state.this_year_total, 100.0, "should not recompute until marked for update again");
+
+        state.mark_for_update();
+        state.update_totals_as_of(&different_flows, &cat, as_of);
+        assert_eq!(state.this_year_total, 500.0, "should recompute after mark_for_update");
+    }
+
+    #[test]
+    fn new_state_defaults_to_zero_and_needs_update() {
+        let state = CategoryFlowsState::new();
+        assert_eq!(state.last_year_total, 0.0);
+        assert_eq!(state.this_year_total, 0.0);
+        assert_eq!(state.current_month_total, 0.0);
+        assert_eq!(state.tracking_ratio, None);
+        assert!(state.needs_update);
+    }
 } 

@@ -6,8 +6,12 @@ pub fn calculate_tracking_ratio(flows: &[Flow], category: &Category) -> Option<f
 }
 
 /// Core of `calculate_tracking_ratio`, parameterized on "today" so it can be
-/// tested deterministically instead of depending on the wall clock.
-fn calculate_tracking_ratio_as_of(flows: &[Flow], category: &Category, as_of: NaiveDate) -> Option<f64> {
+/// tested deterministically instead of depending on the wall clock. Visible
+/// within the crate (not just this module) so callers like `Dashboard` and
+/// `CategoryFlowsState` can compute a tracking ratio consistent with an
+/// explicit `as_of` date of their own, rather than re-reading the wall clock
+/// independently.
+pub(crate) fn calculate_tracking_ratio_as_of(flows: &[Flow], category: &Category, as_of: NaiveDate) -> Option<f64> {
     let current_year = as_of.year();
 
     // Get flows for this category
