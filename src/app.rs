@@ -218,13 +218,12 @@ impl PreftApp {
                     tax_deductible: None,
                 };
                 self.new_flow = Some(new_flow.clone());
-                // Update the editor with the new flow
+                // Update the editor with the new flow. FlowEditor::new()
+                // resets amount_input/description_input from the fresh Flow's
+                // defaults; see the has_editor() check in update() that keeps
+                // this fresh editor from being overwritten by the stale one.
                 self.flow_editor_state.set_editor(new_flow, true);
-                
-                // TODO: The amount and description fields in the flow editor are not being reset to their default values
-                // after saving a flow. This needs to be fixed by properly updating the FlowEditor's internal state
-                // (amount_input and description_input) when creating a new flow.
-                
+
                 // Reinitialize default values for the new flow
                 if let Some(category) = self.categories.iter().find(|c| c.id == category_id) {
                     self.custom_field_values.clear();
@@ -274,7 +273,7 @@ impl PreftApp {
         let generator = ReportGenerator::new(
             self.flows.clone(),
             self.categories.iter()
-                .map(|cat| (cat.id.clone(), cat.name.clone()))
+                .map(|cat| (cat.id.clone(), (cat.name.clone(), cat.flow_type.clone())))
                 .collect()
         );
         generator.generate_report(&self.report_request)
@@ -723,8 +722,13 @@ impl eframe::App for PreftApp {
                     // Take the editor temporarily to avoid multiple mutable borrows
                     if let Some(mut editor) = self.flow_editor_state.take_editor() {
                         editor.show(ui, self, &category);
-                        // Only set the editor back if we're still in edit mode
-                        if self.new_flow.is_some() || self.editing_flow.is_some() {
+                        // save_flow() may have already installed a fresh editor
+                        // (e.g. for the next new-flow entry, with amount/description
+                        // reset to their defaults) during the call above -- don't
+                        // clobber it by putting the stale one we took out back.
+                        if !self.flow_editor_state.has_editor()
+                            && (self.new_flow.is_some() || self.editing_flow.is_some())
+                        {
                             self.flow_editor_state.put_editor_back(editor);
                         }
                     }
@@ -882,7 +886,7 @@ impl eframe::App for PreftApp {
                             let generator = ReportGenerator::new(
                                 flows,
                                 self.categories.iter()
-                                    .map(|cat| (cat.id.clone(), cat.name.clone()))
+                                    .map(|cat| (cat.id.clone(), (cat.name.clone(), cat.flow_type.clone())))
                                     .collect()
                             );
                             if let Ok(data) = generator.generate_report(&report_request) {

@@ -1,6 +1,6 @@
 use chrono::{NaiveDate, Datelike};
 use std::collections::HashMap;
-use crate::models::Flow;
+use crate::models::{Flow, FlowType};
 use printpdf::*;
 use std::io::{Cursor, BufWriter, Write};
 use std::path::Path;
@@ -63,6 +63,25 @@ fn group_flows_by_field<'a>(flows: &[&'a Flow], field_name: &str) -> HashMap<Str
         }
     }
     grouped
+}
+
+/// Nets per-category totals into a single overall total: Income category
+/// totals add, Expense category totals subtract. Flow amounts are stored as
+/// unsigned magnitudes (sign comes from the category's `FlowType`, the same
+/// convention `Dashboard::update_financial_summary_as_of` uses), so a plain
+/// sum of all category totals would overstate the result by counting
+/// expenses as if they were income. A category id with no matching entry in
+/// `categories` (e.g. the category was deleted after flows referencing it
+/// were saved) contributes nothing, consistent with how the dashboard skips
+/// such flows rather than guessing a sign for them.
+fn net_total(category_totals: &HashMap<String, f64>, categories: &HashMap<String, (String, FlowType)>) -> f64 {
+    category_totals.iter()
+        .map(|(category_id, total)| match categories.get(category_id) {
+            Some((_, FlowType::Income)) => *total,
+            Some((_, FlowType::Expense)) => -*total,
+            None => 0.0,
+        })
+        .sum()
 }
 
 #[derive(Debug, Clone, PartialEq, Copy)]
@@ -156,7 +175,7 @@ impl Default for ReportRequest {
 
 pub struct ReportGenerator {
     flows: Vec<Flow>,
-    categories: HashMap<String, String>, // category_id -> category_name
+    categories: HashMap<String, (String, FlowType)>, // category_id -> (category_name, flow_type)
     title_font: Option<IndirectFontRef>,
     subtitle_font: Option<IndirectFontRef>,
     header_font: Option<IndirectFontRef>,
@@ -164,7 +183,7 @@ pub struct ReportGenerator {
 }
 
 impl ReportGenerator {
-    pub fn new(flows: Vec<Flow>, categories: HashMap<String, String>) -> Self {
+    pub fn new(flows: Vec<Flow>, categories: HashMap<String, (String, FlowType)>) -> Self {
         Self { 
             flows,
             categories,
@@ -247,7 +266,7 @@ impl ReportGenerator {
             // Add category header
             let layer = doc.get_page(current_page).get_layer(current_layer);
             let category_name = self.categories.get(category_id)
-                .map(|name| name.as_str())
+                .map(|(name, _)| name.as_str())
                 .unwrap_or(category_id);
             layer.use_text(&format!("Category: {}", category_name), 16.0, Mm(20.0), y_pos, &header_font);
             y_pos -= Mm(15.0);
@@ -313,22 +332,22 @@ impl ReportGenerator {
         
         // Add category totals
         let mut y_pos = Mm(220.0);
-        let mut overall_total = 0.0;
-        
+        let overall_total = net_total(&category_totals, &self.categories);
+
         for (category_id, total) in &category_totals {
-            overall_total += total;
-            
             let category_name = self.categories.get(category_id)
-                .map(|name| name.as_str())
+                .map(|(name, _)| name.as_str())
                 .unwrap_or(category_id);
-            
-            layer.use_text(&format!("{}: ${:.2}", category_name, total), 
+
+            layer.use_text(&format!("{}: ${:.2}", category_name, total),
                 14.0, Mm(20.0), y_pos, &body_font);
             y_pos -= Mm(15.0);
         }
-        
-        // Add overall total
-        layer.use_text(&format!("Overall Total: ${:.2}", overall_total), 
+
+        // Add overall total (net: income minus expenses, not a sum of all
+        // flow magnitudes -- flow amounts are unsigned, so Expense category
+        // totals must be subtracted rather than added)
+        layer.use_text(&format!("Overall Total: ${:.2}", overall_total),
             16.0, Mm(20.0), y_pos, &header_font);
 
         // Save the document
@@ -483,5 +502,66 @@ mod tests {
         let flows: Vec<&Flow> = Vec::new();
         let grouped = group_flows_by_field(&flows, "vendor");
         assert!(grouped.is_empty());
+    }
+
+    // --- net_total ---
+
+    #[test]
+    fn net_total_subtracts_expenses_from_income() {
+        let mut category_totals = HashMap::new();
+        category_totals.insert("salary".to_string(), 5000.0);
+        category_totals.insert("rent".to_string(), 2000.0);
+
+        let mut categories = HashMap::new();
+        categories.insert("salary".to_string(), ("Salary".to_string(), FlowType::Income));
+        categories.insert("rent".to_string(), ("Rent".to_string(), FlowType::Expense));
+
+        assert_eq!(net_total(&category_totals, &categories), 3000.0);
+    }
+
+    #[test]
+    fn net_total_all_income_sums_directly() {
+        let mut category_totals = HashMap::new();
+        category_totals.insert("salary".to_string(), 1000.0);
+        category_totals.insert("bonus".to_string(), 500.0);
+
+        let mut categories = HashMap::new();
+        categories.insert("salary".to_string(), ("Salary".to_string(), FlowType::Income));
+        categories.insert("bonus".to_string(), ("Bonus".to_string(), FlowType::Income));
+
+        assert_eq!(net_total(&category_totals, &categories), 1500.0);
+    }
+
+    #[test]
+    fn net_total_all_expenses_is_negative() {
+        let mut category_totals = HashMap::new();
+        category_totals.insert("rent".to_string(), 2000.0);
+
+        let mut categories = HashMap::new();
+        categories.insert("rent".to_string(), ("Rent".to_string(), FlowType::Expense));
+
+        assert_eq!(net_total(&category_totals, &categories), -2000.0);
+    }
+
+    #[test]
+    fn net_total_excludes_categories_with_no_matching_entry() {
+        let mut category_totals = HashMap::new();
+        category_totals.insert("salary".to_string(), 1000.0);
+        category_totals.insert("deleted-category".to_string(), 9999.0);
+
+        let mut categories = HashMap::new();
+        categories.insert("salary".to_string(), ("Salary".to_string(), FlowType::Income));
+        // "deleted-category" intentionally has no entry in `categories`.
+
+        assert_eq!(
+            net_total(&category_totals, &categories),
+            1000.0,
+            "a category with no matching entry should contribute nothing, not be guessed as income"
+        );
+    }
+
+    #[test]
+    fn net_total_empty_input_is_zero() {
+        assert_eq!(net_total(&HashMap::new(), &HashMap::new()), 0.0);
     }
 } 
