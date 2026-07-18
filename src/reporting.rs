@@ -105,6 +105,30 @@ fn net_total(category_totals: &HashMap<String, f64>, categories: &HashMap<String
         .sum()
 }
 
+/// Formats a dollar amount, using parentheses for negatives (accounting
+/// style, e.g. `"($100.00)"`) instead of a leading minus sign (`"$-100.00"`).
+fn format_currency(amount: f64) -> String {
+    if amount < 0.0 {
+        format!("(${:.2})", -amount)
+    } else {
+        format!("${:.2}", amount)
+    }
+}
+
+/// Reverses the sign a category's raw (unsigned) total displays as in the
+/// report summary: Expense totals show as positive (their raw magnitude),
+/// Income totals show as negative. This is the opposite of standard
+/// accounting sign convention, deliberately: since the primary use case for
+/// this app is expense tracking, a net loss reading as a plain positive
+/// number (rather than a negative one) is the more useful default -- see the
+/// note printed alongside the summary table.
+fn summary_display_value(raw_total: f64, flow_type: &FlowType) -> f64 {
+    match flow_type {
+        FlowType::Income => -raw_total,
+        FlowType::Expense => raw_total,
+    }
+}
+
 /// Custom fields to show as report columns for a category: all of them,
 /// except the one currently selected as "Group By" (already shown as each
 /// group's section header, so repeating it per row would be redundant).
@@ -143,7 +167,7 @@ fn format_field_value(field: &CategoryField, flow: &Flow) -> String {
         },
         FieldType::Currency => {
             match value.replace(['$', ','], "").parse::<f64>() {
-                Ok(num) => format!("${:.2}", num),
+                Ok(num) => format_currency(num),
                 Err(_) => value.clone(),
             }
         },
@@ -278,7 +302,7 @@ fn render_flow_row(
         .max(1);
 
     layer.use_text(&flow.date.format("%B %d, %Y").to_string(), body_size, Mm(layout.date_x), *y_pos, body_font);
-    layer.use_text(&format!("${:.2}", flow.amount), body_size, Mm(layout.amount_x), *y_pos, body_font);
+    layer.use_text(&format_currency(flow.amount), body_size, Mm(layout.amount_x), *y_pos, body_font);
 
     let mut line_y = *y_pos;
     for line in &description_lines {
@@ -524,10 +548,13 @@ impl ReportGenerator {
                         render_flow_row(&layer, flow, &visible_fields, &layout, body_size, &body_font, &mut y_pos);
                     }
 
-                    // Add group total
+                    // Add group total -- in the same column as individual
+                    // flow amounts, not the old hardcoded Mm(80.0), which
+                    // landed under Description once column positions became
+                    // dynamic (variable custom-field columns).
                     let group_total: f64 = group_flows.iter().map(|f| f.amount).sum();
                     layer.use_text("Group Total:", 12.0, Mm(20.0), y_pos, &body_font);
-                    layer.use_text(&format!("${:.2}", group_total), 12.0, Mm(80.0), y_pos, &body_font);
+                    layer.use_text(&format_currency(group_total), 12.0, Mm(layout.amount_x), y_pos, &body_font);
                     y_pos -= Mm(15.0);
                 }
             } else {
@@ -537,10 +564,13 @@ impl ReportGenerator {
                 }
             }
 
+            // Extra breathing room between the flow table and the category total.
+            y_pos -= Mm(8.0);
+
             // Add category total
             let category_total: f64 = flows.iter().map(|f| f.amount).sum();
             category_totals.insert(category_id.clone(), category_total);
-            layer.use_text(&format!("Category Total: ${:.2}", category_total), 14.0, Mm(20.0), y_pos, &header_font);
+            layer.use_text(&format!("Category Total: {}", format_currency(category_total)), 14.0, Mm(20.0), y_pos, &header_font);
             y_pos -= Mm(20.0);
 
             page_count += 1;
@@ -552,26 +582,73 @@ impl ReportGenerator {
         
         // Add summary title
         layer.use_text("Summary", 20.0, Mm(20.0), Mm(250.0), &header_font);
-        
-        // Add category totals
-        let mut y_pos = Mm(220.0);
-        let overall_total = net_total(&category_totals, &self.categories);
 
-        for (category_id, total) in &category_totals {
-            let category_name = self.categories.get(category_id)
-                .map(|info| info.name.as_str())
-                .unwrap_or(category_id);
+        let mut y_pos = Mm(235.0);
 
-            layer.use_text(&format!("{}: ${:.2}", category_name, total),
-                14.0, Mm(20.0), y_pos, &body_font);
-            y_pos -= Mm(15.0);
+        // Clarifying note: everything below uses a reversed sign convention
+        // from standard accounting (see `summary_display_value`).
+        const SUMMARY_SIGN_NOTE: &str = "Note: amounts below use a reversed sign convention, since this app is primarily used for expense tracking. Expense totals and a net loss are shown as positive; Income totals and a net gain are shown as negative, in parentheses.";
+        let note_size = 9.0;
+        for line in wrap_text(SUMMARY_SIGN_NOTE, max_chars_for_width(170.0, note_size)) {
+            layer.use_text(&line, note_size, Mm(20.0), y_pos, &body_font);
+            y_pos -= Mm(4.5);
+        }
+        y_pos -= Mm(8.0);
+
+        // Table header
+        const SUMMARY_AMOUNT_X: f64 = 120.0;
+        layer.use_text("Category", 12.0, Mm(20.0), y_pos, &header_font);
+        layer.use_text("Total", 12.0, Mm(SUMMARY_AMOUNT_X), y_pos, &header_font);
+        y_pos -= Mm(8.0);
+        layer.add_line_break();
+        y_pos -= Mm(5.0);
+
+        // Per-category totals (reversed-sign display), plus a running
+        // income/expense breakdown for the summary lines below.
+        let mut total_income = 0.0;
+        let mut total_expense = 0.0;
+
+        for (category_id, raw_total) in &category_totals {
+            let info = self.categories.get(category_id);
+            let category_name = info.map(|i| i.name.as_str()).unwrap_or(category_id);
+
+            let displayed = match info.map(|i| i.flow_type.clone()) {
+                Some(FlowType::Income) => {
+                    total_income += *raw_total;
+                    summary_display_value(*raw_total, &FlowType::Income)
+                }
+                Some(FlowType::Expense) => {
+                    total_expense += *raw_total;
+                    summary_display_value(*raw_total, &FlowType::Expense)
+                }
+                // Category was deleted after flows referencing it were saved:
+                // shown for transparency but excluded from the income/expense
+                // breakdown and net total, same as `net_total` already does.
+                None => *raw_total,
+            };
+
+            layer.use_text(category_name, 12.0, Mm(20.0), y_pos, &body_font);
+            layer.use_text(&format_currency(displayed), 12.0, Mm(SUMMARY_AMOUNT_X), y_pos, &body_font);
+            y_pos -= Mm(12.0);
         }
 
-        // Add overall total (net: income minus expenses, not a sum of all
-        // flow magnitudes -- flow amounts are unsigned, so Expense category
-        // totals must be subtracted rather than added)
-        layer.use_text(&format!("Overall Total: ${:.2}", overall_total),
-            16.0, Mm(20.0), y_pos, &header_font);
+        y_pos -= Mm(6.0);
+        layer.add_line_break();
+        y_pos -= Mm(10.0);
+
+        layer.use_text("Total Income:", 12.0, Mm(20.0), y_pos, &body_font);
+        layer.use_text(&format_currency(total_income), 12.0, Mm(SUMMARY_AMOUNT_X), y_pos, &body_font);
+        y_pos -= Mm(12.0);
+
+        layer.use_text("Total Expense:", 12.0, Mm(20.0), y_pos, &body_font);
+        layer.use_text(&format_currency(total_expense), 12.0, Mm(SUMMARY_AMOUNT_X), y_pos, &body_font);
+        y_pos -= Mm(16.0);
+
+        // Net total, same reversed convention: a net loss (expenses exceeded
+        // income) displays as positive, a net gain as negative.
+        let overall_total = -net_total(&category_totals, &self.categories);
+        layer.use_text("Net Total:", 16.0, Mm(20.0), y_pos, &header_font);
+        layer.use_text(&format_currency(overall_total), 16.0, Mm(SUMMARY_AMOUNT_X), y_pos, &header_font);
 
         // Save the document
         let mut buffer = Vec::new();
@@ -809,6 +886,46 @@ mod tests {
     #[test]
     fn net_total_empty_input_is_zero() {
         assert_eq!(net_total(&HashMap::new(), &HashMap::new()), 0.0);
+    }
+
+    // --- format_currency ---
+
+    #[test]
+    fn format_currency_positive_has_no_parentheses() {
+        assert_eq!(format_currency(100.0), "$100.00");
+    }
+
+    #[test]
+    fn format_currency_negative_uses_parentheses_not_a_minus_sign() {
+        assert_eq!(format_currency(-100.0), "($100.00)");
+    }
+
+    #[test]
+    fn format_currency_zero_has_no_parentheses() {
+        assert_eq!(format_currency(0.0), "$0.00");
+    }
+
+    // --- summary_display_value ---
+
+    #[test]
+    fn summary_display_value_reverses_income_to_negative() {
+        // Deliberately the opposite of standard accounting sign convention --
+        // see the doc comment on `summary_display_value` for why.
+        assert_eq!(summary_display_value(500.0, &FlowType::Income), -500.0);
+    }
+
+    #[test]
+    fn summary_display_value_reverses_expense_to_positive() {
+        assert_eq!(summary_display_value(500.0, &FlowType::Expense), 500.0);
+    }
+
+    #[test]
+    fn summary_display_value_and_format_currency_together_show_income_in_parens() {
+        // The combination is what actually appears on the page: an Income
+        // category's raw (positive, unsigned) total should render inside
+        // parentheses, not as a plain positive number.
+        let displayed = summary_display_value(500.0, &FlowType::Income);
+        assert_eq!(format_currency(displayed), "($500.00)");
     }
 
     // --- visible_custom_fields ---
