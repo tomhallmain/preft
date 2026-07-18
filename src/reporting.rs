@@ -2,6 +2,7 @@ use chrono::{NaiveDate, Datelike};
 use std::collections::HashMap;
 use crate::models::{CategoryField, FieldType, Flow, FlowType};
 use printpdf::*;
+use printpdf::indices::{PdfPageIndex, PdfLayerIndex};
 use std::io::{Cursor, BufWriter, Write};
 use std::path::Path;
 
@@ -224,13 +225,21 @@ fn max_chars_for_width(width_mm: f64, font_size_pt: f64) -> usize {
 
 /// Body text shrinks as more custom-field columns need to fit alongside
 /// Date/Amount/Description, since `printpdf` lays out text at fixed
-/// coordinates with no automatic column sizing.
-fn body_font_size_for_extra_columns(extra_column_count: usize) -> f64 {
-    match extra_column_count {
+/// coordinates with no automatic column sizing. Grouped sections shrink a
+/// bit further still (regardless of extra-column count), since group
+/// headers and group totals add extra vertical density on top of the rows
+/// themselves.
+fn body_font_size_for_extra_columns(extra_column_count: usize, is_grouped: bool) -> f64 {
+    let base: f64 = match extra_column_count {
         0 => 12.0,
         1..=2 => 10.0,
         3..=4 => 8.5,
         _ => 7.0,
+    };
+    if is_grouped {
+        (base - 1.5).max(6.0)
+    } else {
+        base
     }
 }
 
@@ -273,10 +282,65 @@ fn compute_column_layout(extra_field_count: usize) -> ColumnLayout {
     }
 }
 
+/// Line height in mm at the given font size, and the per-line character
+/// budget for the flow table's shared column width. Shared by `row_height_mm`
+/// (checking page space before drawing a row) and `render_flow_row` (actually
+/// drawing it), so both agree on how a row will be laid out.
+fn row_wrap_metrics(layout: &ColumnLayout, body_size: f64) -> (f64, usize) {
+    const PT_TO_MM: f64 = 0.3528;
+    let line_height = body_size * PT_TO_MM * 1.3;
+    let max_chars = max_chars_for_width(layout.column_width, body_size);
+    (line_height, max_chars)
+}
+
+/// Height in mm a flow's row will need once word-wrapped -- how much
+/// vertical space to check for (via `ensure_page_space`) before drawing it.
+fn row_height_mm(flow: &Flow, visible_fields: &[&CategoryField], layout: &ColumnLayout, body_size: f64) -> f64 {
+    let (line_height, max_chars) = row_wrap_metrics(layout, body_size);
+
+    let description_line_count = wrap_text(&flow.description, max_chars).len();
+    let field_line_count = visible_fields.iter()
+        .map(|field| wrap_text(&format_field_value(field, flow), max_chars).len())
+        .max()
+        .unwrap_or(1);
+
+    let row_line_count = description_line_count.max(field_line_count).max(1);
+    line_height * row_line_count as f64 + 2.0
+}
+
+/// Ensures at least `needed_height_mm` of vertical space remains below
+/// `y_pos` on the current page before the caller draws something that
+/// shouldn't be split across a page break (a table row, a header line, a
+/// total line). If there isn't enough room, starts a new page, updates
+/// `current_page`/`current_layer`, and resets `y_pos` near the top. Always
+/// returns the layer content should now be drawn on -- the current page's if
+/// nothing changed, or the freshly-started one's if it did.
+fn ensure_page_space(
+    doc: &PdfDocumentReference,
+    current_page: &mut PdfPageIndex,
+    current_layer: &mut PdfLayerIndex,
+    y_pos: &mut Mm,
+    needed_height_mm: f64,
+) -> PdfLayerReference {
+    const BOTTOM_MARGIN_MM: f64 = 25.0;
+    const TOP_OF_NEW_PAGE_MM: f64 = 270.0;
+
+    if y_pos.0 - needed_height_mm < BOTTOM_MARGIN_MM {
+        let (page, layer) = doc.add_page(Mm(210.0), Mm(297.0), "Layer 1");
+        *current_page = page;
+        *current_layer = layer;
+        *y_pos = Mm(TOP_OF_NEW_PAGE_MM);
+    }
+
+    doc.get_page(*current_page).get_layer(*current_layer)
+}
+
 /// Draws one flow's row: Date and Amount (always one line), then Description
 /// and each visible custom field, word-wrapped to fit their column width.
 /// Advances `y_pos` past however many wrapped lines the tallest column in
-/// this row needed.
+/// this row needed. Caller is responsible for calling `ensure_page_space`
+/// (with `row_height_mm`'s result) first, and passing in whatever `layer`
+/// that returns.
 fn render_flow_row(
     layer: &PdfLayerReference,
     flow: &Flow,
@@ -286,9 +350,7 @@ fn render_flow_row(
     body_font: &IndirectFontRef,
     y_pos: &mut Mm,
 ) {
-    const PT_TO_MM: f64 = 0.3528;
-    let line_height = body_size * PT_TO_MM * 1.3;
-    let max_chars = max_chars_for_width(layout.column_width, body_size);
+    let (line_height, max_chars) = row_wrap_metrics(layout, body_size);
 
     let description_lines = wrap_text(&flow.description, max_chars);
     let field_lines: Vec<Vec<String>> = visible_fields.iter()
@@ -501,7 +563,7 @@ impl ReportGenerator {
             }
 
             // Add category header
-            let layer = doc.get_page(current_page).get_layer(current_layer);
+            let mut layer = doc.get_page(current_page).get_layer(current_layer);
             let category_name = self.categories.get(category_id)
                 .map(|info| info.name.as_str())
                 .unwrap_or(category_id);
@@ -516,7 +578,8 @@ impl ReportGenerator {
                 .unwrap_or(&[]);
             let visible_fields = visible_custom_fields(category_fields, &request.group_by);
             let layout = compute_column_layout(visible_fields.len());
-            let body_size = body_font_size_for_extra_columns(visible_fields.len());
+            let is_grouped = group_by_applies_to_category(&request.group_by, category_fields);
+            let body_size = body_font_size_for_extra_columns(visible_fields.len(), is_grouped);
             let header_size = (body_size + 1.0).min(12.0);
 
             // Add table headers
@@ -534,17 +597,22 @@ impl ReportGenerator {
 
             // Group flows if requested and this category actually has the
             // field being grouped by -- otherwise render normally below.
-            if group_by_applies_to_category(&request.group_by, category_fields) {
+            if is_grouped {
                 let group_by = request.group_by.as_ref().unwrap();
                 let grouped_flows = group_flows_by_field(flows, group_by);
 
                 // Add each group
                 for (group_value, group_flows) in &grouped_flows {
+                    layer = ensure_page_space(&doc, &mut current_page, &mut current_layer, &mut y_pos, 12.0);
                     layer.use_text(&format!("{}: {}", group_by, group_value), 14.0, Mm(20.0), y_pos, &header_font);
                     y_pos -= Mm(10.0);
 
-                    // Add flows in this group
+                    // Add flows in this group -- checking (and paginating for)
+                    // space before each row, since previously nothing did,
+                    // and content past the bottom margin is simply invisible.
                     for flow in group_flows {
+                        let needed = row_height_mm(flow, &visible_fields, &layout, body_size);
+                        layer = ensure_page_space(&doc, &mut current_page, &mut current_layer, &mut y_pos, needed);
                         render_flow_row(&layer, flow, &visible_fields, &layout, body_size, &body_font, &mut y_pos);
                     }
 
@@ -552,6 +620,7 @@ impl ReportGenerator {
                     // flow amounts, not the old hardcoded Mm(80.0), which
                     // landed under Description once column positions became
                     // dynamic (variable custom-field columns).
+                    layer = ensure_page_space(&doc, &mut current_page, &mut current_layer, &mut y_pos, 15.0);
                     let group_total: f64 = group_flows.iter().map(|f| f.amount).sum();
                     layer.use_text("Group Total:", 12.0, Mm(20.0), y_pos, &body_font);
                     layer.use_text(&format_currency(group_total), 12.0, Mm(layout.amount_x), y_pos, &body_font);
@@ -560,14 +629,15 @@ impl ReportGenerator {
             } else {
                 // Add all flows without grouping
                 for flow in flows {
+                    let needed = row_height_mm(flow, &visible_fields, &layout, body_size);
+                    layer = ensure_page_space(&doc, &mut current_page, &mut current_layer, &mut y_pos, needed);
                     render_flow_row(&layer, flow, &visible_fields, &layout, body_size, &body_font, &mut y_pos);
                 }
             }
 
-            // Extra breathing room between the flow table and the category total.
+            // Add category total, with a bit of breathing room above it.
+            layer = ensure_page_space(&doc, &mut current_page, &mut current_layer, &mut y_pos, 28.0);
             y_pos -= Mm(8.0);
-
-            // Add category total
             let category_total: f64 = flows.iter().map(|f| f.amount).sum();
             category_totals.insert(category_id.clone(), category_total);
             layer.use_text(&format!("Category Total: {}", format_currency(category_total)), 14.0, Mm(20.0), y_pos, &header_font);
@@ -577,9 +647,9 @@ impl ReportGenerator {
         }
 
         // Add summary page
-        let (summary_page, summary_layer) = doc.add_page(Mm(210.0), Mm(297.0), "Layer 1");
-        let layer = doc.get_page(summary_page).get_layer(summary_layer);
-        
+        let (mut summary_page, mut summary_layer) = doc.add_page(Mm(210.0), Mm(297.0), "Layer 1");
+        let mut layer = doc.get_page(summary_page).get_layer(summary_layer);
+
         // Add summary title
         layer.use_text("Summary", 20.0, Mm(20.0), Mm(250.0), &header_font);
 
@@ -589,14 +659,17 @@ impl ReportGenerator {
         // from standard accounting (see `summary_display_value`).
         const SUMMARY_SIGN_NOTE: &str = "Note: amounts below use a reversed sign convention, since this app is primarily used for expense tracking. Expense totals and a net loss are shown as positive; Income totals and a net gain are shown as negative, in parentheses.";
         let note_size = 9.0;
-        for line in wrap_text(SUMMARY_SIGN_NOTE, max_chars_for_width(170.0, note_size)) {
-            layer.use_text(&line, note_size, Mm(20.0), y_pos, &body_font);
+        let note_lines = wrap_text(SUMMARY_SIGN_NOTE, max_chars_for_width(170.0, note_size));
+        layer = ensure_page_space(&doc, &mut summary_page, &mut summary_layer, &mut y_pos, note_lines.len() as f64 * 4.5 + 8.0);
+        for line in &note_lines {
+            layer.use_text(line, note_size, Mm(20.0), y_pos, &body_font);
             y_pos -= Mm(4.5);
         }
         y_pos -= Mm(8.0);
 
         // Table header
         const SUMMARY_AMOUNT_X: f64 = 120.0;
+        layer = ensure_page_space(&doc, &mut summary_page, &mut summary_layer, &mut y_pos, 13.0);
         layer.use_text("Category", 12.0, Mm(20.0), y_pos, &header_font);
         layer.use_text("Total", 12.0, Mm(SUMMARY_AMOUNT_X), y_pos, &header_font);
         y_pos -= Mm(8.0);
@@ -627,11 +700,15 @@ impl ReportGenerator {
                 None => *raw_total,
             };
 
+            layer = ensure_page_space(&doc, &mut summary_page, &mut summary_layer, &mut y_pos, 12.0);
             layer.use_text(category_name, 12.0, Mm(20.0), y_pos, &body_font);
             layer.use_text(&format_currency(displayed), 12.0, Mm(SUMMARY_AMOUNT_X), y_pos, &body_font);
             y_pos -= Mm(12.0);
         }
 
+        // Keep Total Income/Total Expense/Net Total together rather than
+        // letting a page break land in the middle of the block.
+        layer = ensure_page_space(&doc, &mut summary_page, &mut summary_layer, &mut y_pos, 60.0);
         y_pos -= Mm(6.0);
         layer.add_line_break();
         y_pos -= Mm(10.0);
@@ -1073,11 +1150,29 @@ mod tests {
 
     #[test]
     fn body_font_size_shrinks_as_extra_columns_grow() {
-        let zero = body_font_size_for_extra_columns(0);
-        let two = body_font_size_for_extra_columns(2);
-        let five = body_font_size_for_extra_columns(5);
+        let zero = body_font_size_for_extra_columns(0, false);
+        let two = body_font_size_for_extra_columns(2, false);
+        let five = body_font_size_for_extra_columns(5, false);
         assert!(zero > two);
         assert!(two > five);
+    }
+
+    #[test]
+    fn body_font_size_shrinks_further_when_grouped() {
+        for extra_columns in [0, 2, 5] {
+            let ungrouped = body_font_size_for_extra_columns(extra_columns, false);
+            let grouped = body_font_size_for_extra_columns(extra_columns, true);
+            assert!(
+                grouped < ungrouped,
+                "grouped ({}) should be smaller than ungrouped ({}) at {} extra columns",
+                grouped, ungrouped, extra_columns
+            );
+        }
+    }
+
+    #[test]
+    fn body_font_size_has_a_floor_even_when_grouped() {
+        assert!(body_font_size_for_extra_columns(10, true) >= 6.0);
     }
 
     // --- compute_column_layout ---
@@ -1104,5 +1199,60 @@ mod tests {
         let no_extras = compute_column_layout(0);
         let with_extras = compute_column_layout(3);
         assert!(with_extras.column_width < no_extras.column_width);
+    }
+
+    // --- row_height_mm ---
+
+    fn flow_with_description(description: &str) -> Flow {
+        Flow {
+            description: description.to_string(),
+            ..flow("f", NaiveDate::from_ymd_opt(2024, 1, 1).unwrap(), HashMap::new())
+        }
+    }
+
+    #[test]
+    fn row_height_mm_increases_with_more_wrapped_lines() {
+        let layout = compute_column_layout(0);
+        let short = flow_with_description("Short");
+        let long = flow_with_description(&"word ".repeat(50));
+
+        let short_height = row_height_mm(&short, &[], &layout, 12.0);
+        let long_height = row_height_mm(&long, &[], &layout, 12.0);
+
+        assert!(long_height > short_height);
+    }
+
+    #[test]
+    fn row_height_mm_is_never_less_than_one_line() {
+        let layout = compute_column_layout(0);
+        let empty = flow_with_description("");
+
+        assert!(row_height_mm(&empty, &[], &layout, 12.0) > 0.0);
+    }
+
+    // --- ensure_page_space ---
+
+    #[test]
+    fn ensure_page_space_resets_y_pos_when_not_enough_room() {
+        let (doc, page1, layer1) = PdfDocument::new("Test", Mm(210.0), Mm(297.0), "Layer 1");
+        let mut current_page = page1;
+        let mut current_layer = layer1;
+        let mut y_pos = Mm(30.0); // close to the bottom margin already
+
+        ensure_page_space(&doc, &mut current_page, &mut current_layer, &mut y_pos, 20.0);
+
+        assert!(y_pos.0 > 100.0, "y_pos should reset near the top of a new page, got {}", y_pos.0);
+    }
+
+    #[test]
+    fn ensure_page_space_leaves_y_pos_alone_when_room_remains() {
+        let (doc, page1, layer1) = PdfDocument::new("Test", Mm(210.0), Mm(297.0), "Layer 1");
+        let mut current_page = page1;
+        let mut current_layer = layer1;
+        let mut y_pos = Mm(200.0);
+
+        ensure_page_space(&doc, &mut current_page, &mut current_layer, &mut y_pos, 20.0);
+
+        assert_eq!(y_pos.0, 200.0, "y_pos shouldn't change when there's already enough room");
     }
 } 
