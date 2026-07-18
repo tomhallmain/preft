@@ -4,8 +4,8 @@ use std::fs::File;
 use std::io::Write;
 
 use crate::app::PreftApp;
-use crate::models::{CategoryField, Flow, FlowType};
-use crate::reporting::{FontVariant, ReportGenerator, TimePeriod};
+use crate::models::Flow;
+use crate::reporting::{FontVariant, ReportCategoryInfo, ReportGenerator, TimePeriod};
 use std::collections::HashMap;
 
 /// The "Custom" range is seeded with Jan 1 -> today the first time it's
@@ -22,12 +22,25 @@ use std::collections::HashMap;
 /// (and every other field: title, subtitle, fonts, group-by) flash and then
 /// revert, since egui repaints continuously while a combo-box popup is open.
 pub fn show_report_dialog(ctx: &egui::Context, app: &mut PreftApp) {
-    let fields = app.get_selected_category()
-        .map(|c| c.fields.clone())
-        .unwrap_or_default();
+    // The report covers flows across all categories, not just whichever one
+    // happens to be selected in the sidebar -- so "Group By" needs to offer
+    // every category's custom field names, not just the selected category's.
+    // (Previously this used `app.get_selected_category()`, which meant the
+    // dropdown was often empty, e.g. whenever the dashboard was open instead
+    // of a specific category.)
+    let mut field_names: Vec<String> = app.categories.iter()
+        .flat_map(|c| c.fields.iter().map(|f| f.name.clone()))
+        .collect();
+    field_names.sort();
+    field_names.dedup();
+
     let flows: Vec<Flow> = app.flows.clone();
-    let categories: HashMap<String, (String, FlowType)> = app.categories.iter()
-        .map(|cat| (cat.id.clone(), (cat.name.clone(), cat.flow_type.clone())))
+    let categories: HashMap<String, ReportCategoryInfo> = app.categories.iter()
+        .map(|cat| (cat.id.clone(), ReportCategoryInfo {
+            name: cat.name.clone(),
+            flow_type: cat.flow_type.clone(),
+            fields: cat.fields.clone(),
+        }))
         .collect();
     let mut should_close = false;
     let mut pdf_data = None;
@@ -41,7 +54,7 @@ pub fn show_report_dialog(ctx: &egui::Context, app: &mut PreftApp) {
             show_time_period_selection(ui, &mut app.report_request.time_period);
 
             // Group by selection
-            show_group_by_selection(ui, &mut app.report_request.group_by, &fields);
+            show_group_by_selection(ui, &mut app.report_request.group_by, &field_names);
 
             // Title and subtitle
             ui.horizontal(|ui| {
@@ -135,16 +148,15 @@ fn time_period_label(time_period: &TimePeriod) -> String {
     }
 }
 
-fn show_group_by_selection(ui: &mut egui::Ui, group_by: &mut Option<String>, fields: &[CategoryField]) {
+fn show_group_by_selection(ui: &mut egui::Ui, group_by: &mut Option<String>, field_names: &[String]) {
     ui.horizontal(|ui| {
         ui.label("Group By:");
         egui::ComboBox::from_id_source("group_by")
             .selected_text(group_by.as_deref().unwrap_or("None"))
             .show_ui(ui, |ui| {
                 ui.selectable_value(group_by, None, "None");
-                for field in fields {
-                    ui.selectable_value(group_by,
-                        Some(field.name.clone()), &field.name);
+                for name in field_names {
+                    ui.selectable_value(group_by, Some(name.clone()), name);
                 }
             });
     });
