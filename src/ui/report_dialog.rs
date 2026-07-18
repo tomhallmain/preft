@@ -42,6 +42,10 @@ pub fn show_report_dialog(ctx: &egui::Context, app: &mut PreftApp) {
             fields: cat.fields.clone(),
         }))
         .collect();
+    // Same order as the category selection dropdown, so the report's
+    // category order is deterministic instead of following `categories`'
+    // arbitrary `HashMap` iteration order.
+    let category_order: Vec<String> = app.categories.iter().map(|cat| cat.id.clone()).collect();
     let mut should_close = false;
     let mut pdf_data = None;
     let mut show_window = true;
@@ -77,7 +81,7 @@ pub fn show_report_dialog(ctx: &egui::Context, app: &mut PreftApp) {
 
             // Generate button
             if ui.button("Generate Report").clicked() {
-                let generator = ReportGenerator::new(flows.clone(), categories.clone());
+                let generator = ReportGenerator::new(flows.clone(), categories.clone(), category_order.clone());
                 if let Ok(data) = generator.generate_report(&app.report_request) {
                     pdf_data = Some(data);
                     should_close = true;

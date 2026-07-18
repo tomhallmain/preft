@@ -76,6 +76,24 @@ fn group_flows_by_field<'a>(flows: &[&'a Flow], field_name: &str) -> HashMap<Str
     grouped
 }
 
+/// Orders the keys of `present` (category ids with actual data to show)
+/// according to `order` (the category dropdown's order), appending any keys
+/// not found in `order` -- e.g. a category deleted after a flow referencing
+/// it was saved -- at the end, so nothing is silently dropped from the
+/// report just because it's no longer in the ordered list.
+fn ordered_category_ids<T>(order: &[String], present: &HashMap<String, T>) -> Vec<String> {
+    let mut ids: Vec<String> = order.iter()
+        .filter(|id| present.contains_key(*id))
+        .cloned()
+        .collect();
+    for id in present.keys() {
+        if !order.contains(id) {
+            ids.push(id.clone());
+        }
+    }
+    ids
+}
+
 /// Per-category info a report needs: display name and flow type (for netting
 /// the overall total), plus the category's custom field definitions (for
 /// rendering per-flow custom field columns, formatted according to each
@@ -294,7 +312,7 @@ fn row_wrap_metrics(layout: &ColumnLayout, body_size: f64) -> (f64, usize) {
 }
 
 /// Height in mm a flow's row will need once word-wrapped -- how much
-/// vertical space to check for (via `ensure_page_space`) before drawing it.
+/// vertical space to check for (via `PageCursor::ensure_space`) before drawing it.
 fn row_height_mm(flow: &Flow, visible_fields: &[&CategoryField], layout: &ColumnLayout, body_size: f64) -> f64 {
     let (line_height, max_chars) = row_wrap_metrics(layout, body_size);
 
@@ -308,37 +326,76 @@ fn row_height_mm(flow: &Flow, visible_fields: &[&CategoryField], layout: &Column
     line_height * row_line_count as f64 + 2.0
 }
 
-/// Ensures at least `needed_height_mm` of vertical space remains below
-/// `y_pos` on the current page before the caller draws something that
-/// shouldn't be split across a page break (a table row, a header line, a
-/// total line). If there isn't enough room, starts a new page, updates
-/// `current_page`/`current_layer`, and resets `y_pos` near the top. Always
-/// returns the layer content should now be drawn on -- the current page's if
-/// nothing changed, or the freshly-started one's if it did.
-fn ensure_page_space(
-    doc: &PdfDocumentReference,
-    current_page: &mut PdfPageIndex,
-    current_layer: &mut PdfLayerIndex,
-    y_pos: &mut Mm,
-    needed_height_mm: f64,
-) -> PdfLayerReference {
-    const BOTTOM_MARGIN_MM: f64 = 25.0;
-    const TOP_OF_NEW_PAGE_MM: f64 = 270.0;
+const PAGE_WIDTH_MM: f64 = 210.0;
+const PAGE_HEIGHT_MM: f64 = 297.0;
+/// Where content starts on a freshly created page. Kept close to the page
+/// edge (a ~22mm top margin) with a small gap below the period-label chrome
+/// drawn at `HEADER_CHROME_Y_MM`.
+const CONTENT_TOP_MM: f64 = 275.0;
+/// Content may not be drawn below this y position (an ~18mm bottom margin,
+/// leaving room above the page-number chrome at `FOOTER_CHROME_Y_MM`).
+const BOTTOM_MARGIN_MM: f64 = 18.0;
+const CHROME_FONT_SIZE: f64 = 8.0;
+const HEADER_CHROME_Y_MM: f64 = 288.0;
+const FOOTER_CHROME_Y_MM: f64 = 12.0;
 
-    if y_pos.0 - needed_height_mm < BOTTOM_MARGIN_MM {
-        let (page, layer) = doc.add_page(Mm(210.0), Mm(297.0), "Layer 1");
-        *current_page = page;
-        *current_layer = layer;
-        *y_pos = Mm(TOP_OF_NEW_PAGE_MM);
+/// Draws the small-font period label (top margin) and page number (bottom
+/// margin) that appear on every page of the report -- the cover page, every
+/// category page, and any page created mid-content by pagination.
+fn draw_page_chrome(layer: &PdfLayerReference, page_number: usize, time_period_text: &str, chrome_font: &IndirectFontRef) {
+    layer.use_text(time_period_text, CHROME_FONT_SIZE, Mm(20.0), Mm(HEADER_CHROME_Y_MM), chrome_font);
+    layer.use_text(&format!("Page {}", page_number), CHROME_FONT_SIZE, Mm(20.0), Mm(FOOTER_CHROME_Y_MM), chrome_font);
+}
+
+/// Tracks the current page/layer/y-position while rendering the report body,
+/// and centralizes page creation so every new page (whether forced, e.g. one
+/// category per page, or triggered by running out of room) gets the same
+/// period/page-number chrome and content-top position.
+struct PageCursor<'a> {
+    doc: &'a PdfDocumentReference,
+    page: PdfPageIndex,
+    layer_idx: PdfLayerIndex,
+    y_pos: Mm,
+    page_number: usize,
+    time_period_text: &'a str,
+    chrome_font: &'a IndirectFontRef,
+}
+
+impl<'a> PageCursor<'a> {
+    fn layer(&self) -> PdfLayerReference {
+        self.doc.get_page(self.page).get_layer(self.layer_idx)
     }
 
-    doc.get_page(*current_page).get_layer(*current_layer)
+    /// Unconditionally starts a fresh page, e.g. so each category begins on
+    /// its own page rather than possibly sharing one with the previous
+    /// category's tail end.
+    fn start_new_page(&mut self) -> PdfLayerReference {
+        let (page, layer_idx) = self.doc.add_page(Mm(PAGE_WIDTH_MM), Mm(PAGE_HEIGHT_MM), "Layer 1");
+        self.page = page;
+        self.layer_idx = layer_idx;
+        self.y_pos = Mm(CONTENT_TOP_MM);
+        self.page_number += 1;
+        let layer = self.layer();
+        draw_page_chrome(&layer, self.page_number, self.time_period_text, self.chrome_font);
+        layer
+    }
+
+    /// Starts a fresh page only if `needed_height_mm` more content wouldn't
+    /// fit above the bottom margin; otherwise returns the current layer
+    /// unchanged.
+    fn ensure_space(&mut self, needed_height_mm: f64) -> PdfLayerReference {
+        if self.y_pos.0 - needed_height_mm < BOTTOM_MARGIN_MM {
+            self.start_new_page()
+        } else {
+            self.layer()
+        }
+    }
 }
 
 /// Draws one flow's row: Date and Amount (always one line), then Description
 /// and each visible custom field, word-wrapped to fit their column width.
 /// Advances `y_pos` past however many wrapped lines the tallest column in
-/// this row needed. Caller is responsible for calling `ensure_page_space`
+/// this row needed. Caller is responsible for calling `PageCursor::ensure_space`
 /// (with `row_height_mm`'s result) first, and passing in whatever `layer`
 /// that returns.
 fn render_flow_row(
@@ -475,6 +532,13 @@ impl Default for ReportRequest {
 pub struct ReportGenerator {
     flows: Vec<Flow>,
     categories: HashMap<String, ReportCategoryInfo>, // category_id -> info
+    /// Category ids in the same order they appear in the category selection
+    /// dropdown, so the report's category/page order is deterministic
+    /// instead of following `categories`' arbitrary `HashMap` iteration
+    /// order. Any category id referenced by a flow but missing here (e.g. a
+    /// deleted category) is still shown, just appended after the ordered
+    /// ones -- see `ordered_category_ids` in `generate_report`.
+    category_order: Vec<String>,
     title_font: Option<IndirectFontRef>,
     subtitle_font: Option<IndirectFontRef>,
     header_font: Option<IndirectFontRef>,
@@ -482,10 +546,11 @@ pub struct ReportGenerator {
 }
 
 impl ReportGenerator {
-    pub fn new(flows: Vec<Flow>, categories: HashMap<String, ReportCategoryInfo>) -> Self {
+    pub fn new(flows: Vec<Flow>, categories: HashMap<String, ReportCategoryInfo>, category_order: Vec<String>) -> Self {
         Self {
             flows,
             categories,
+            category_order,
             title_font: None,
             subtitle_font: None,
             header_font: None,
@@ -504,9 +569,8 @@ impl ReportGenerator {
         let mut sorted_flows = filtered_flows;
         sorted_flows.sort_by(|a, b| a.date.cmp(&b.date));
 
-        // Create a new document
-        let (doc, page1, layer1) = PdfDocument::new("Financial Report", Mm(210.0), Mm(297.0), "Layer 1");
-        let current_layer = doc.get_page(page1).get_layer(layer1);
+        // Create a new document -- page1/layer1 becomes the cover page below.
+        let (doc, page1, layer1) = PdfDocument::new("Financial Report", Mm(PAGE_WIDTH_MM), Mm(PAGE_HEIGHT_MM), "Layer 1");
 
         // Load fonts
         let title_font = self.load_font(&doc, &request.font_settings.title_font)?;
@@ -514,10 +578,6 @@ impl ReportGenerator {
         let header_font = self.load_font(&doc, &request.font_settings.header_font)?;
         let body_font = self.load_font(&doc, &request.font_settings.body_font)?;
 
-        // Add title
-        current_layer.use_text(&request.title, 24.0, Mm(20.0), Mm(250.0), &title_font);
-        
-        // Add time period subheader
         let time_period_text = match &request.time_period {
             TimePeriod::LastYear => {
                 let now = chrono::Local::now().date_naive();
@@ -534,7 +594,16 @@ impl ReportGenerator {
                 format!("Time Period: {} to {}", start.format("%B %d, %Y"), end.format("%B %d, %Y"))
             },
         };
-        current_layer.use_text(&time_period_text, 12.0, Mm(20.0), Mm(230.0), &subtitle_font);
+
+        // Cover page: title, subtitle, and time period only -- no flow detail,
+        // so it's a standalone summary of what the report covers at a glance.
+        let cover_layer = doc.get_page(page1).get_layer(layer1);
+        cover_layer.use_text(&request.title, 26.0, Mm(20.0), Mm(180.0), &title_font);
+        if !request.subtitle.is_empty() {
+            cover_layer.use_text(&request.subtitle, 16.0, Mm(20.0), Mm(163.0), &subtitle_font);
+        }
+        cover_layer.use_text(&time_period_text, 14.0, Mm(20.0), Mm(148.0), &subtitle_font);
+        draw_page_chrome(&cover_layer, 1, &time_period_text, &body_font);
 
         // Group flows by category
         let mut category_flows: HashMap<String, Vec<&Flow>> = HashMap::new();
@@ -544,36 +613,40 @@ impl ReportGenerator {
                 .push(flow);
         }
 
-        // Create a new page for each category
-        let mut current_page = page1;
-        let mut current_layer = layer1;
-        let mut y_pos = Mm(200.0);
-        let mut page_count = 1;
+        let mut cursor = PageCursor {
+            doc: &doc,
+            page: page1,
+            layer_idx: layer1,
+            y_pos: Mm(CONTENT_TOP_MM),
+            page_number: 1,
+            time_period_text: &time_period_text,
+            chrome_font: &body_font,
+        };
 
         // Store category totals for later use
         let mut category_totals: HashMap<String, f64> = HashMap::new();
 
-        for (category_id, flows) in &category_flows {
-            // If we're not on the first page, create a new page
-            if page_count > 1 {
-                let (page, layer) = doc.add_page(Mm(210.0), Mm(297.0), "Layer 1");
-                current_page = page;
-                current_layer = layer;
-                y_pos = Mm(250.0);
-            }
+        // Categories are rendered in the same order as the category
+        // selection dropdown (`self.category_order`), not `category_flows`'
+        // arbitrary `HashMap` iteration order -- otherwise which category
+        // shows up first/second/etc. changes randomly between report runs.
+        for category_id in ordered_category_ids(&self.category_order, &category_flows) {
+            let flows = &category_flows[&category_id];
+
+            // Each category always starts on its own fresh page.
+            let mut layer = cursor.start_new_page();
 
             // Add category header
-            let mut layer = doc.get_page(current_page).get_layer(current_layer);
-            let category_name = self.categories.get(category_id)
+            let category_name = self.categories.get(&category_id)
                 .map(|info| info.name.as_str())
-                .unwrap_or(category_id);
-            layer.use_text(&format!("Category: {}", category_name), 16.0, Mm(20.0), y_pos, &header_font);
-            y_pos -= Mm(15.0);
+                .unwrap_or(&category_id);
+            layer.use_text(&format!("Category: {}", category_name), 16.0, Mm(20.0), cursor.y_pos, &header_font);
+            cursor.y_pos -= Mm(15.0);
 
             // Custom fields (other than the active group-by field, which is
             // already shown as each group's section header) get their own
             // column, sharing the remaining page width with Description.
-            let category_fields = self.categories.get(category_id)
+            let category_fields = self.categories.get(&category_id)
                 .map(|info| info.fields.as_slice())
                 .unwrap_or(&[]);
             let visible_fields = visible_custom_fields(category_fields, &request.group_by);
@@ -583,17 +656,17 @@ impl ReportGenerator {
             let header_size = (body_size + 1.0).min(12.0);
 
             // Add table headers
-            layer.use_text("Date", header_size, Mm(layout.date_x), y_pos, &header_font);
-            layer.use_text("Amount", header_size, Mm(layout.amount_x), y_pos, &header_font);
-            layer.use_text("Description", header_size, Mm(layout.description_x), y_pos, &header_font);
+            layer.use_text("Date", header_size, Mm(layout.date_x), cursor.y_pos, &header_font);
+            layer.use_text("Amount", header_size, Mm(layout.amount_x), cursor.y_pos, &header_font);
+            layer.use_text("Description", header_size, Mm(layout.description_x), cursor.y_pos, &header_font);
             for (field, x) in visible_fields.iter().zip(&layout.extra_field_x) {
-                layer.use_text(&field.display_name(), header_size, Mm(*x), y_pos, &header_font);
+                layer.use_text(&field.display_name(), header_size, Mm(*x), cursor.y_pos, &header_font);
             }
-            y_pos -= Mm(10.0);
+            cursor.y_pos -= Mm(10.0);
 
             // Add separator line
             layer.add_line_break();
-            y_pos -= Mm(5.0);
+            cursor.y_pos -= Mm(5.0);
 
             // Group flows if requested and this category actually has the
             // field being grouped by -- otherwise render normally below.
@@ -603,129 +676,124 @@ impl ReportGenerator {
 
                 // Add each group
                 for (group_value, group_flows) in &grouped_flows {
-                    layer = ensure_page_space(&doc, &mut current_page, &mut current_layer, &mut y_pos, 12.0);
-                    layer.use_text(&format!("{}: {}", group_by, group_value), 14.0, Mm(20.0), y_pos, &header_font);
-                    y_pos -= Mm(10.0);
+                    layer = cursor.ensure_space(12.0);
+                    layer.use_text(&format!("{}: {}", group_by, group_value), 14.0, Mm(20.0), cursor.y_pos, &header_font);
+                    cursor.y_pos -= Mm(10.0);
 
                     // Add flows in this group -- checking (and paginating for)
                     // space before each row, since previously nothing did,
                     // and content past the bottom margin is simply invisible.
                     for flow in group_flows {
                         let needed = row_height_mm(flow, &visible_fields, &layout, body_size);
-                        layer = ensure_page_space(&doc, &mut current_page, &mut current_layer, &mut y_pos, needed);
-                        render_flow_row(&layer, flow, &visible_fields, &layout, body_size, &body_font, &mut y_pos);
+                        layer = cursor.ensure_space(needed);
+                        render_flow_row(&layer, flow, &visible_fields, &layout, body_size, &body_font, &mut cursor.y_pos);
                     }
 
                     // Add group total -- in the same column as individual
                     // flow amounts, not the old hardcoded Mm(80.0), which
                     // landed under Description once column positions became
                     // dynamic (variable custom-field columns).
-                    layer = ensure_page_space(&doc, &mut current_page, &mut current_layer, &mut y_pos, 15.0);
+                    layer = cursor.ensure_space(15.0);
                     let group_total: f64 = group_flows.iter().map(|f| f.amount).sum();
-                    layer.use_text("Group Total:", 12.0, Mm(20.0), y_pos, &body_font);
-                    layer.use_text(&format_currency(group_total), 12.0, Mm(layout.amount_x), y_pos, &body_font);
-                    y_pos -= Mm(15.0);
+                    layer.use_text("Group Total:", 12.0, Mm(20.0), cursor.y_pos, &body_font);
+                    layer.use_text(&format_currency(group_total), 12.0, Mm(layout.amount_x), cursor.y_pos, &body_font);
+                    cursor.y_pos -= Mm(15.0);
                 }
             } else {
                 // Add all flows without grouping
                 for flow in flows {
                     let needed = row_height_mm(flow, &visible_fields, &layout, body_size);
-                    layer = ensure_page_space(&doc, &mut current_page, &mut current_layer, &mut y_pos, needed);
-                    render_flow_row(&layer, flow, &visible_fields, &layout, body_size, &body_font, &mut y_pos);
+                    layer = cursor.ensure_space(needed);
+                    render_flow_row(&layer, flow, &visible_fields, &layout, body_size, &body_font, &mut cursor.y_pos);
                 }
             }
 
             // Add category total, with a bit of breathing room above it.
-            layer = ensure_page_space(&doc, &mut current_page, &mut current_layer, &mut y_pos, 28.0);
-            y_pos -= Mm(8.0);
+            layer = cursor.ensure_space(28.0);
+            cursor.y_pos -= Mm(8.0);
             let category_total: f64 = flows.iter().map(|f| f.amount).sum();
             category_totals.insert(category_id.clone(), category_total);
-            layer.use_text(&format!("Category Total: {}", format_currency(category_total)), 14.0, Mm(20.0), y_pos, &header_font);
-            y_pos -= Mm(20.0);
-
-            page_count += 1;
+            layer.use_text(&format!("Category Total: {}", format_currency(category_total)), 14.0, Mm(20.0), cursor.y_pos, &header_font);
         }
 
         // Add summary page
-        let (mut summary_page, mut summary_layer) = doc.add_page(Mm(210.0), Mm(297.0), "Layer 1");
-        let mut layer = doc.get_page(summary_page).get_layer(summary_layer);
-
-        // Add summary title
-        layer.use_text("Summary", 20.0, Mm(20.0), Mm(250.0), &header_font);
-
-        let mut y_pos = Mm(235.0);
+        let mut layer = cursor.start_new_page();
+        layer.use_text("Summary", 20.0, Mm(20.0), cursor.y_pos, &header_font);
+        cursor.y_pos -= Mm(15.0);
 
         // Clarifying note: everything below uses a reversed sign convention
         // from standard accounting (see `summary_display_value`).
         const SUMMARY_SIGN_NOTE: &str = "Note: amounts below use a reversed sign convention, since this app is primarily used for expense tracking. Expense totals and a net loss are shown as positive; Income totals and a net gain are shown as negative, in parentheses.";
         let note_size = 9.0;
         let note_lines = wrap_text(SUMMARY_SIGN_NOTE, max_chars_for_width(170.0, note_size));
-        layer = ensure_page_space(&doc, &mut summary_page, &mut summary_layer, &mut y_pos, note_lines.len() as f64 * 4.5 + 8.0);
+        layer = cursor.ensure_space(note_lines.len() as f64 * 4.5 + 8.0);
         for line in &note_lines {
-            layer.use_text(line, note_size, Mm(20.0), y_pos, &body_font);
-            y_pos -= Mm(4.5);
+            layer.use_text(line, note_size, Mm(20.0), cursor.y_pos, &body_font);
+            cursor.y_pos -= Mm(4.5);
         }
-        y_pos -= Mm(8.0);
+        cursor.y_pos -= Mm(8.0);
 
         // Table header
         const SUMMARY_AMOUNT_X: f64 = 120.0;
-        layer = ensure_page_space(&doc, &mut summary_page, &mut summary_layer, &mut y_pos, 13.0);
-        layer.use_text("Category", 12.0, Mm(20.0), y_pos, &header_font);
-        layer.use_text("Total", 12.0, Mm(SUMMARY_AMOUNT_X), y_pos, &header_font);
-        y_pos -= Mm(8.0);
+        layer = cursor.ensure_space(13.0);
+        layer.use_text("Category", 12.0, Mm(20.0), cursor.y_pos, &header_font);
+        layer.use_text("Total", 12.0, Mm(SUMMARY_AMOUNT_X), cursor.y_pos, &header_font);
+        cursor.y_pos -= Mm(8.0);
         layer.add_line_break();
-        y_pos -= Mm(5.0);
+        cursor.y_pos -= Mm(5.0);
 
         // Per-category totals (reversed-sign display), plus a running
-        // income/expense breakdown for the summary lines below.
+        // income/expense breakdown for the summary lines below. Same
+        // dropdown-derived ordering as the detail pages, for consistency.
         let mut total_income = 0.0;
         let mut total_expense = 0.0;
 
-        for (category_id, raw_total) in &category_totals {
-            let info = self.categories.get(category_id);
-            let category_name = info.map(|i| i.name.as_str()).unwrap_or(category_id);
+        for category_id in ordered_category_ids(&self.category_order, &category_totals) {
+            let raw_total = category_totals[&category_id];
+            let info = self.categories.get(&category_id);
+            let category_name = info.map(|i| i.name.as_str()).unwrap_or(&category_id);
 
             let displayed = match info.map(|i| i.flow_type.clone()) {
                 Some(FlowType::Income) => {
-                    total_income += *raw_total;
-                    summary_display_value(*raw_total, &FlowType::Income)
+                    total_income += raw_total;
+                    summary_display_value(raw_total, &FlowType::Income)
                 }
                 Some(FlowType::Expense) => {
-                    total_expense += *raw_total;
-                    summary_display_value(*raw_total, &FlowType::Expense)
+                    total_expense += raw_total;
+                    summary_display_value(raw_total, &FlowType::Expense)
                 }
                 // Category was deleted after flows referencing it were saved:
                 // shown for transparency but excluded from the income/expense
                 // breakdown and net total, same as `net_total` already does.
-                None => *raw_total,
+                None => raw_total,
             };
 
-            layer = ensure_page_space(&doc, &mut summary_page, &mut summary_layer, &mut y_pos, 12.0);
-            layer.use_text(category_name, 12.0, Mm(20.0), y_pos, &body_font);
-            layer.use_text(&format_currency(displayed), 12.0, Mm(SUMMARY_AMOUNT_X), y_pos, &body_font);
-            y_pos -= Mm(12.0);
+            layer = cursor.ensure_space(12.0);
+            layer.use_text(category_name, 12.0, Mm(20.0), cursor.y_pos, &body_font);
+            layer.use_text(&format_currency(displayed), 12.0, Mm(SUMMARY_AMOUNT_X), cursor.y_pos, &body_font);
+            cursor.y_pos -= Mm(12.0);
         }
 
         // Keep Total Income/Total Expense/Net Total together rather than
         // letting a page break land in the middle of the block.
-        layer = ensure_page_space(&doc, &mut summary_page, &mut summary_layer, &mut y_pos, 60.0);
-        y_pos -= Mm(6.0);
+        layer = cursor.ensure_space(60.0);
+        cursor.y_pos -= Mm(6.0);
         layer.add_line_break();
-        y_pos -= Mm(10.0);
+        cursor.y_pos -= Mm(10.0);
 
-        layer.use_text("Total Income:", 12.0, Mm(20.0), y_pos, &body_font);
-        layer.use_text(&format_currency(total_income), 12.0, Mm(SUMMARY_AMOUNT_X), y_pos, &body_font);
-        y_pos -= Mm(12.0);
+        layer.use_text("Total Income:", 12.0, Mm(20.0), cursor.y_pos, &body_font);
+        layer.use_text(&format_currency(total_income), 12.0, Mm(SUMMARY_AMOUNT_X), cursor.y_pos, &body_font);
+        cursor.y_pos -= Mm(12.0);
 
-        layer.use_text("Total Expense:", 12.0, Mm(20.0), y_pos, &body_font);
-        layer.use_text(&format_currency(total_expense), 12.0, Mm(SUMMARY_AMOUNT_X), y_pos, &body_font);
-        y_pos -= Mm(16.0);
+        layer.use_text("Total Expense:", 12.0, Mm(20.0), cursor.y_pos, &body_font);
+        layer.use_text(&format_currency(total_expense), 12.0, Mm(SUMMARY_AMOUNT_X), cursor.y_pos, &body_font);
+        cursor.y_pos -= Mm(16.0);
 
         // Net total, same reversed convention: a net loss (expenses exceeded
         // income) displays as positive, a net gain as negative.
         let overall_total = -net_total(&category_totals, &self.categories);
-        layer.use_text("Net Total:", 16.0, Mm(20.0), y_pos, &header_font);
-        layer.use_text(&format_currency(overall_total), 16.0, Mm(SUMMARY_AMOUNT_X), y_pos, &header_font);
+        layer.use_text("Net Total:", 16.0, Mm(20.0), cursor.y_pos, &header_font);
+        layer.use_text(&format_currency(overall_total), 16.0, Mm(SUMMARY_AMOUNT_X), cursor.y_pos, &header_font);
 
         // Save the document
         let mut buffer = Vec::new();
@@ -1230,29 +1298,81 @@ mod tests {
         assert!(row_height_mm(&empty, &[], &layout, 12.0) > 0.0);
     }
 
-    // --- ensure_page_space ---
+    // --- PageCursor::ensure_space ---
 
     #[test]
     fn ensure_page_space_resets_y_pos_when_not_enough_room() {
         let (doc, page1, layer1) = PdfDocument::new("Test", Mm(210.0), Mm(297.0), "Layer 1");
-        let mut current_page = page1;
-        let mut current_layer = layer1;
-        let mut y_pos = Mm(30.0); // close to the bottom margin already
+        let font = doc.add_builtin_font(BuiltinFont::TimesRoman).unwrap();
+        let period = "Time Period: Jan 01, 2024 to Dec 31, 2024";
+        let mut cursor = PageCursor {
+            doc: &doc,
+            page: page1,
+            layer_idx: layer1,
+            y_pos: Mm(30.0), // close to the bottom margin already
+            page_number: 1,
+            time_period_text: period,
+            chrome_font: &font,
+        };
 
-        ensure_page_space(&doc, &mut current_page, &mut current_layer, &mut y_pos, 20.0);
+        cursor.ensure_space(20.0);
 
-        assert!(y_pos.0 > 100.0, "y_pos should reset near the top of a new page, got {}", y_pos.0);
+        assert!(cursor.y_pos.0 > 100.0, "y_pos should reset near the top of a new page, got {}", cursor.y_pos.0);
+        assert_eq!(cursor.page_number, 2, "starting a new page should advance the page number");
     }
 
     #[test]
     fn ensure_page_space_leaves_y_pos_alone_when_room_remains() {
         let (doc, page1, layer1) = PdfDocument::new("Test", Mm(210.0), Mm(297.0), "Layer 1");
-        let mut current_page = page1;
-        let mut current_layer = layer1;
-        let mut y_pos = Mm(200.0);
+        let font = doc.add_builtin_font(BuiltinFont::TimesRoman).unwrap();
+        let period = "Time Period: Jan 01, 2024 to Dec 31, 2024";
+        let mut cursor = PageCursor {
+            doc: &doc,
+            page: page1,
+            layer_idx: layer1,
+            y_pos: Mm(200.0),
+            page_number: 1,
+            time_period_text: period,
+            chrome_font: &font,
+        };
 
-        ensure_page_space(&doc, &mut current_page, &mut current_layer, &mut y_pos, 20.0);
+        cursor.ensure_space(20.0);
 
-        assert_eq!(y_pos.0, 200.0, "y_pos shouldn't change when there's already enough room");
+        assert_eq!(cursor.y_pos.0, 200.0, "y_pos shouldn't change when there's already enough room");
+        assert_eq!(cursor.page_number, 1, "page number shouldn't advance when there's already enough room");
+    }
+
+    #[test]
+    fn ordered_category_ids_follows_the_given_order() {
+        let mut present: HashMap<String, i32> = HashMap::new();
+        present.insert("b".to_string(), 1);
+        present.insert("a".to_string(), 2);
+        present.insert("c".to_string(), 3);
+
+        let order = vec!["a".to_string(), "b".to_string(), "c".to_string()];
+        assert_eq!(ordered_category_ids(&order, &present), vec!["a", "b", "c"]);
+    }
+
+    #[test]
+    fn ordered_category_ids_appends_ids_missing_from_order() {
+        let mut present: HashMap<String, i32> = HashMap::new();
+        present.insert("known".to_string(), 1);
+        present.insert("orphaned".to_string(), 2);
+
+        let order = vec!["known".to_string()];
+        let result = ordered_category_ids(&order, &present);
+
+        assert_eq!(result[0], "known");
+        assert!(result.contains(&"orphaned".to_string()), "an id missing from `order` must still be included, not dropped");
+        assert_eq!(result.len(), 2);
+    }
+
+    #[test]
+    fn ordered_category_ids_skips_order_entries_with_no_data() {
+        let mut present: HashMap<String, i32> = HashMap::new();
+        present.insert("has_data".to_string(), 1);
+
+        let order = vec!["no_data".to_string(), "has_data".to_string()];
+        assert_eq!(ordered_category_ids(&order, &present), vec!["has_data"]);
     }
 } 
