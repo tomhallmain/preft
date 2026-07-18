@@ -52,15 +52,25 @@ impl Default for TimePeriod {
     }
 }
 
-/// Groups flows by the value of a custom field. Flows that don't have the
-/// field set are silently excluded from the result entirely (not grouped
-/// under any key) -- this mirrors the report's existing display behavior.
+/// Label used to group flows that have no value set for the field being
+/// grouped by (either the field is missing entirely, or its value is empty/
+/// whitespace-only), so they still appear -- and count toward totals --
+/// instead of silently vanishing from the report.
+const UNSET_GROUP_LABEL: &str = "(Value not set)";
+
+/// Groups flows by the value of a custom field. Every flow passed in ends up
+/// in exactly one group -- flows with no meaningful value for the field are
+/// grouped together under `UNSET_GROUP_LABEL` rather than dropped, so the
+/// displayed group totals always sum to the category total shown on the
+/// same page.
 fn group_flows_by_field<'a>(flows: &[&'a Flow], field_name: &str) -> HashMap<String, Vec<&'a Flow>> {
     let mut grouped: HashMap<String, Vec<&'a Flow>> = HashMap::new();
     for flow in flows {
-        if let Some(value) = flow.custom_fields.get(field_name) {
-            grouped.entry(value.clone()).or_default().push(flow);
-        }
+        let key = match flow.custom_fields.get(field_name) {
+            Some(value) if !value.trim().is_empty() => value.clone(),
+            _ => UNSET_GROUP_LABEL.to_string(),
+        };
+        grouped.entry(key).or_default().push(flow);
     }
     grouped
 }
@@ -102,6 +112,22 @@ fn visible_custom_fields<'a>(category_fields: &'a [CategoryField], group_by: &Op
     category_fields.iter()
         .filter(|f| group_by.as_deref() != Some(f.name.as_str()))
         .collect()
+}
+
+/// Whether the report's selected "Group By" field name is actually one of
+/// this category's own fields. A single "Group By" selection is shared
+/// across the whole report (it can span many categories with different
+/// field sets), so this decides, per category, whether to group at all --
+/// otherwise `group_flows_by_field` would silently drop every flow that
+/// doesn't have the field, which is *every* flow for a category that never
+/// had it, making that category's section show a total with zero detail
+/// rows to back it up. Categories where this is false render their flows
+/// normally (ungrouped), the same as when no "Group By" is selected.
+fn group_by_applies_to_category(group_by: &Option<String>, category_fields: &[CategoryField]) -> bool {
+    match group_by {
+        Some(name) => category_fields.iter().any(|f| &f.name == name),
+        None => false,
+    }
 }
 
 /// Formats a flow's custom field value for display, applying the same
@@ -482,8 +508,10 @@ impl ReportGenerator {
             layer.add_line_break();
             y_pos -= Mm(5.0);
 
-            // Group flows if requested
-            if let Some(group_by) = &request.group_by {
+            // Group flows if requested and this category actually has the
+            // field being grouped by -- otherwise render normally below.
+            if group_by_applies_to_category(&request.group_by, category_fields) {
+                let group_by = request.group_by.as_ref().unwrap();
                 let grouped_flows = group_flows_by_field(flows, group_by);
 
                 // Add each group
@@ -675,7 +703,7 @@ mod tests {
     }
 
     #[test]
-    fn group_flows_by_field_excludes_flows_missing_the_field() {
+    fn group_flows_by_field_buckets_missing_values_instead_of_dropping_them() {
         let date = NaiveDate::from_ymd_opt(2024, 1, 1).unwrap();
         let mut fields_a = HashMap::new();
         fields_a.insert("vendor".to_string(), "Acme".to_string());
@@ -688,8 +716,27 @@ mod tests {
         let grouped = group_flows_by_field(&flows, "vendor");
 
         let total_grouped_flows: usize = grouped.values().map(|v| v.len()).sum();
-        assert_eq!(total_grouped_flows, 1, "the flow missing the field should not appear in any group");
+        assert_eq!(total_grouped_flows, 2, "every flow should end up in some group, so group totals sum to the category total");
         assert_eq!(grouped.get("Acme").unwrap().len(), 1);
+        assert_eq!(grouped.get(UNSET_GROUP_LABEL).unwrap().len(), 1);
+    }
+
+    #[test]
+    fn group_flows_by_field_treats_empty_and_whitespace_values_as_unset() {
+        let date = NaiveDate::from_ymd_opt(2024, 1, 1).unwrap();
+        let mut fields_a = HashMap::new();
+        fields_a.insert("vendor".to_string(), "".to_string());
+        let mut fields_b = HashMap::new();
+        fields_b.insert("vendor".to_string(), "   ".to_string());
+
+        let flow_a = flow("a", date, fields_a);
+        let flow_b = flow("b", date, fields_b);
+        let flows: Vec<&Flow> = vec![&flow_a, &flow_b];
+
+        let grouped = group_flows_by_field(&flows, "vendor");
+
+        assert_eq!(grouped.len(), 1);
+        assert_eq!(grouped.get(UNSET_GROUP_LABEL).unwrap().len(), 2);
     }
 
     #[test]
@@ -792,6 +839,35 @@ mod tests {
         let fields = vec![text_field("recipient")];
         let visible = visible_custom_fields(&fields, &Some("some_other_field".to_string()));
         assert_eq!(visible.len(), 1);
+    }
+
+    // --- group_by_applies_to_category ---
+
+    #[test]
+    fn group_by_applies_when_category_has_the_field() {
+        let fields = vec![text_field("recipient")];
+        assert!(group_by_applies_to_category(&Some("recipient".to_string()), &fields));
+    }
+
+    #[test]
+    fn group_by_does_not_apply_when_category_lacks_the_field() {
+        // This is the bug this function fixes: a report spans many
+        // categories, and a "Group By" selection picked for one category
+        // (e.g. Donations' "recipient") shouldn't cause a category that never
+        // had that field (e.g. Salary) to render zero detail rows.
+        let fields = vec![text_field("some_other_field")];
+        assert!(!group_by_applies_to_category(&Some("recipient".to_string()), &fields));
+    }
+
+    #[test]
+    fn group_by_does_not_apply_when_nothing_is_selected() {
+        let fields = vec![text_field("recipient")];
+        assert!(!group_by_applies_to_category(&None, &fields));
+    }
+
+    #[test]
+    fn group_by_does_not_apply_to_a_category_with_no_fields_at_all() {
+        assert!(!group_by_applies_to_category(&Some("recipient".to_string()), &[]));
     }
 
     // --- format_field_value ---
