@@ -40,6 +40,10 @@ pub struct PreftApp {
     pub show_backup_dialog: bool,
     pub backup_status: Option<String>,
     pub backup_in_progress: bool,
+    /// Set while a manual backup's final move-into-place is running on a
+    /// background thread (see `create_backup`); polled once per frame by
+    /// `poll_pending_backup`.
+    pending_backup: Option<std::sync::mpsc::Receiver<BackupMoveOutcome>>,
     // Encryption-related fields
     pub show_password_dialog: bool,
     pub password_dialog_mode: PasswordDialogMode,
@@ -56,6 +60,32 @@ pub enum PasswordDialogMode {
     EnterPassword,    // Entering password to unlock encrypted database
     ChangePassword,   // Changing existing password
     DisableEncryption, // Disabling encryption entirely
+}
+
+/// Result of a background thread's attempt to move a completed backup (see
+/// `create_backup`) from its local temp path to the destination the user
+/// picked. Carries everything `poll_pending_backup` needs to finish the
+/// backup-history bookkeeping without touching the filesystem again.
+struct BackupMoveOutcome {
+    dest_path: std::path::PathBuf,
+    encrypted: bool,
+    file_size: Option<u64>,
+    error: Option<String>,
+}
+
+/// Moves `temp_path` to `dest_path`. Tries a plain rename first (fast,
+/// atomic, and the common case since both are usually on the same
+/// filesystem); falls back to copy-then-remove if that fails, since rename
+/// can't cross filesystem boundaries (e.g. the destination is a different
+/// drive, a network share, or removable media) and that's exactly the kind
+/// of destination this is meant to support without blocking the UI.
+fn move_backup_file(temp_path: &std::path::Path, dest_path: &std::path::Path) -> std::io::Result<()> {
+    if std::fs::rename(temp_path, dest_path).is_ok() {
+        return Ok(());
+    }
+    std::fs::copy(temp_path, dest_path)?;
+    std::fs::remove_file(temp_path)?;
+    Ok(())
 }
 
 impl PreftApp {
@@ -143,6 +173,7 @@ impl PreftApp {
             show_backup_dialog: false,
             backup_status: None,
             backup_in_progress: false,
+            pending_backup: None,
             // Encryption-related fields
             show_password_dialog: false,
             password_dialog_mode: PasswordDialogMode::SetPassword,
@@ -329,64 +360,134 @@ impl PreftApp {
         self.backup_status = Some("Selecting backup location...".to_string());
 
         // Show file dialog for backup location
-        if let Some(path) = rfd::FileDialog::new()
+        let Some(dest_path) = rfd::FileDialog::new()
             .set_title("Save Backup As")
             .set_file_name(&format!("preft_backup_{}.db", chrono::Local::now().format("%Y%m%d_%H%M%S")))
             .add_filter("SQLite Database", &["db"])
             .add_filter("All Files", &["*"])
             .save_file()
-        {
-            self.backup_status = Some("Creating backup...".to_string());
-
-            // Determine if we should create encrypted or unencrypted backup
-            let encrypted_backup = self.db.is_encrypted();
-            
-            match self.db.backup_to_file(&path, encrypted_backup) {
-                Ok(_) => {
-                    let file_size = std::fs::metadata(&path)
-                        .map(|m| m.len())
-                        .ok();
-
-                    let entry = crate::settings::BackupEntry {
-                        timestamp: chrono::Utc::now(),
-                        file_path: path.to_string_lossy().to_string(),
-                        file_size,
-                        success: true,
-                        error_message: None,
-                    };
-
-                    self.user_settings.add_backup_entry(entry.clone());
-                    self.user_settings.set_last_backup_path(path.to_string_lossy().to_string());
-
-                    if let Err(e) = self.db.save_user_settings(&self.user_settings) {
-                        log::error!("Failed to save backup history: {}", e);
-                    }
-
-                    self.backup_status = Some(format!(
-                        "Backup completed successfully! {}",
-                        if encrypted_backup { "(Encrypted)" } else { "(Unencrypted)" }
-                    ));
-                }
-                Err(e) => {
-                    let entry = crate::settings::BackupEntry {
-                        timestamp: chrono::Utc::now(),
-                        file_path: path.to_string_lossy().to_string(),
-                        file_size: None,
-                        success: false,
-                        error_message: Some(e.to_string()),
-                    };
-
-                    self.user_settings.add_backup_entry(entry);
-                    if let Err(e) = self.db.save_user_settings(&self.user_settings) {
-                        log::error!("Failed to save backup history: {}", e);
-                    }
-
-                    self.backup_status = Some(format!("Backup failed: {}", e));
-                }
-            }
-        } else {
+        else {
             self.backup_status = Some("Backup cancelled".to_string());
+            self.backup_in_progress = false;
+            return;
+        };
+
+        self.backup_status = Some("Creating backup...".to_string());
+
+        // Determine if we should create encrypted or unencrypted backup
+        let encrypted_backup = self.db.is_encrypted();
+
+        // The actual SQLite copy needs live access to `self.db` (it reads
+        // the in-memory encryption key for an unencrypted/decrypted backup),
+        // so it can't safely run on another thread without a much bigger
+        // refactor -- but it's local-disk-to-local-disk on a personal-
+        // finance-sized database, so it's fast. Write it to a local temp
+        // file first, then hand that off to a background thread to move
+        // into place. That move is the part that can actually be slow (the
+        // user picked destination could be a network drive or a USB stick),
+        // and it touches nothing but plain files, so it's safe to run off
+        // the UI thread without touching `self.db` at all.
+        let temp_path = std::env::temp_dir().join(format!(
+            "preft_backup_tmp_{}_{}.db",
+            std::process::id(),
+            chrono::Local::now().format("%Y%m%d%H%M%S"),
+        ));
+
+        match self.db.backup_to_file(&temp_path, encrypted_backup) {
+            Ok(()) => {
+                self.backup_status = Some("Finishing backup...".to_string());
+
+                let (tx, rx) = std::sync::mpsc::channel();
+                self.pending_backup = Some(rx);
+
+                std::thread::spawn(move || {
+                    let outcome = match move_backup_file(&temp_path, &dest_path) {
+                        Ok(()) => BackupMoveOutcome {
+                            dest_path: dest_path.clone(),
+                            encrypted: encrypted_backup,
+                            file_size: std::fs::metadata(&dest_path).ok().map(|m| m.len()),
+                            error: None,
+                        },
+                        Err(e) => {
+                            let _ = std::fs::remove_file(&temp_path); // best-effort cleanup
+                            BackupMoveOutcome {
+                                dest_path: dest_path.clone(),
+                                encrypted: encrypted_backup,
+                                file_size: None,
+                                error: Some(e.to_string()),
+                            }
+                        }
+                    };
+                    // If the receiver's gone (e.g. the app is shutting down),
+                    // there's nothing left to report the outcome to.
+                    let _ = tx.send(outcome);
+                });
+            }
+            Err(e) => {
+                let _ = std::fs::remove_file(&temp_path); // may not exist; best-effort
+
+                let entry = crate::settings::BackupEntry {
+                    timestamp: chrono::Utc::now(),
+                    file_path: dest_path.to_string_lossy().to_string(),
+                    file_size: None,
+                    success: false,
+                    error_message: Some(e.to_string()),
+                };
+                self.user_settings.add_backup_entry(entry);
+                if let Err(e) = self.db.save_user_settings(&self.user_settings) {
+                    log::error!("Failed to save backup history: {}", e);
+                }
+
+                self.backup_status = Some(format!("Backup failed: {}", e));
+                self.backup_in_progress = false;
+            }
         }
+    }
+
+    /// Checks whether a manual backup's background move-into-place (started
+    /// by `create_backup`) has finished, and if so, finalizes the backup
+    /// history entry and clears `backup_in_progress`. Called once per frame
+    /// from `update()`; a no-op (a single non-blocking channel poll) unless
+    /// a backup is actually pending.
+    pub fn poll_pending_backup(&mut self) {
+        let Some(rx) = &self.pending_backup else { return };
+
+        let outcome = match rx.try_recv() {
+            Ok(outcome) => outcome,
+            Err(std::sync::mpsc::TryRecvError::Empty) => return,
+            Err(std::sync::mpsc::TryRecvError::Disconnected) => {
+                // The thread panicked before sending anything -- surface
+                // that rather than leaving backup_in_progress stuck forever.
+                self.pending_backup = None;
+                self.backup_status = Some("Backup failed: background thread did not complete".to_string());
+                self.backup_in_progress = false;
+                return;
+            }
+        };
+        self.pending_backup = None;
+
+        let entry = crate::settings::BackupEntry {
+            timestamp: chrono::Utc::now(),
+            file_path: outcome.dest_path.to_string_lossy().to_string(),
+            file_size: outcome.file_size,
+            success: outcome.error.is_none(),
+            error_message: outcome.error.clone(),
+        };
+        self.user_settings.add_backup_entry(entry);
+        if outcome.error.is_none() {
+            self.user_settings.set_last_backup_path(outcome.dest_path.to_string_lossy().to_string());
+        }
+        if let Err(e) = self.db.save_user_settings(&self.user_settings) {
+            log::error!("Failed to save backup history: {}", e);
+        }
+
+        self.backup_status = Some(match &outcome.error {
+            None => format!(
+                "Backup completed successfully! {}",
+                if outcome.encrypted { "(Encrypted)" } else { "(Unencrypted)" }
+            ),
+            Some(e) => format!("Backup failed: {}", e),
+        });
 
         self.backup_in_progress = false;
     }
@@ -560,6 +661,15 @@ impl PreftApp {
             return Ok(());
         }
 
+        // No financial data (flows/categories) changed this session -- an
+        // automatic backup would just be an identical duplicate of the most
+        // recent one, so skip it. Deliberately not affected by UI-only
+        // changes like the year filter or a hidden-category toggle, since
+        // those are preferences, not records worth backing up.
+        if !self.db.is_dirty() {
+            return Ok(());
+        }
+
         let backup_dir = match self.user_settings.get_auto_backup_directory() {
             Some(dir) => std::path::PathBuf::from(dir),
             None => {
@@ -676,6 +786,15 @@ impl PreftApp {
 
 impl eframe::App for PreftApp {
     fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
+        self.poll_pending_backup();
+        if self.pending_backup.is_some() {
+            // Keep polling at a modest rate while the background move is in
+            // flight -- egui doesn't repaint on its own between input
+            // events, and nothing else here would otherwise wake it up
+            // until the move finishes.
+            ctx.request_repaint_after(std::time::Duration::from_millis(100));
+        }
+
         egui::CentralPanel::default().show(ctx, |ui| {
             // First show the main panel
             show_main_panel(ui, self);
@@ -724,9 +843,59 @@ impl eframe::App for PreftApp {
     }
 
     fn on_exit(&mut self, _gl: Option<&eframe::glow::Context>) {
-        // Create automatic backup if enabled
+        // If a manual backup's background move (see `create_backup`) is
+        // still in flight, the process exiting would kill that thread
+        // mid-copy and could leave a truncated file at the destination the
+        // user picked. Give it a bounded window to finish first -- long
+        // enough for even a slow destination in the common case, but not
+        // so long that a stuck thread hangs shutdown indefinitely.
+        let manual_backup_was_pending = self.pending_backup.is_some();
+        if let Some(rx) = self.pending_backup.take() {
+            let _ = rx.recv_timeout(std::time::Duration::from_secs(10));
+        }
+
+        // A manual backup that was still wrapping up when the app closed
+        // already captures the current state -- an automatic backup right
+        // on top of it would just be a redundant duplicate.
+        if manual_backup_was_pending {
+            return;
+        }
+
+        // Create automatic backup if enabled (and only if something
+        // actually changed since startup -- see `Database::is_dirty`).
         if let Err(e) = self.create_automatic_backup() {
             log::error!("Failed to create automatic backup on shutdown: {}", e);
         }
     }
-} 
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // `move_backup_file` is the one piece of the backgrounded-backup change
+    // that's pure enough to unit test without a constructible `PreftApp`
+    // (see docs/APP_STATE_REFACTOR.md) -- it only touches plain files.
+
+    #[test]
+    fn move_backup_file_moves_content_to_the_destination() {
+        let dir = tempfile::tempdir().expect("create tempdir");
+        let src = dir.path().join("source.db");
+        let dest = dir.path().join("dest.db");
+        std::fs::write(&src, b"backup contents").expect("write source file");
+
+        move_backup_file(&src, &dest).expect("move should succeed");
+
+        assert!(!src.exists(), "source file should be gone after a successful move");
+        assert_eq!(std::fs::read(&dest).expect("read dest"), b"backup contents");
+    }
+
+    #[test]
+    fn move_backup_file_errors_when_source_is_missing() {
+        let dir = tempfile::tempdir().expect("create tempdir");
+        let src = dir.path().join("does_not_exist.db");
+        let dest = dir.path().join("dest.db");
+
+        assert!(move_backup_file(&src, &dest).is_err());
+    }
+}

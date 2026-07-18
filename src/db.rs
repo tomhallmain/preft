@@ -13,6 +13,19 @@ pub struct Database {
     conn: Connection,
     encryption: Option<DatabaseEncryption>,
     encryption_config: EncryptionConfig,
+    /// Set by every write method that changes financial records (flows or
+    /// categories -- `save_flow`, `delete_category`, `restore_from_file`,
+    /// etc.), so callers can tell whether anything worth backing up has
+    /// changed since this `Database` was constructed -- see `is_dirty`.
+    /// Deliberately *not* set by `save_user_settings`: that table is UI/app
+    /// preferences (year filter, hidden categories, backup directory, ...),
+    /// not financial data, and gets written on routine, entirely-expected
+    /// interactions like switching a filter -- see its own doc comment. A
+    /// `Cell` rather than a plain `bool` because most write methods only
+    /// take `&self` (SQLite itself doesn't need `&mut` for writes; only
+    /// migrations/restore, which replace the connection's schema/content
+    /// wholesale, take `&mut self`).
+    dirty: std::cell::Cell<bool>,
 }
 
 impl Database {
@@ -34,12 +47,12 @@ impl Database {
         let conn = Connection::open(db_path)?;
         
         // Initialize the database
-        let mut db = Database { conn, encryption: None, encryption_config };
+        let mut db = Database { conn, encryption: None, encryption_config, dirty: std::cell::Cell::new(false) };
         db.initialize()?;
-        
+
         // Run migrations
         migrations::run_migrations(&mut db.conn)?;
-        
+
         // Check if we have any categories, if not, save the defaults
         let count: i64 = db.conn.query_row("SELECT COUNT(*) FROM categories", [], |row| row.get(0))?;
         if count == 0 {
@@ -53,7 +66,12 @@ impl Database {
         if settings_count == 0 {
             db.save_user_settings(&UserSettings::new())?;
         }
-        
+
+        // The seeding above (default categories/settings on first run) marks
+        // `dirty`, but it isn't a change the *user* made -- reset so a fresh
+        // database starts clean for `is_dirty`'s purposes.
+        db.dirty.set(false);
+
         Ok(db)
     }
 
@@ -62,23 +80,23 @@ impl Database {
         // Load encryption configuration from OS keystore
         let encryption_config = EncryptionConfig::load()
             .unwrap_or_else(|_| EncryptionConfig::default());
-        
+
         // Get the user's home directory
         let home_dir = dirs::home_dir()
             .ok_or_else(|| anyhow::anyhow!("Could not find home directory"))?;
-        
+
         // Create the app directory if it doesn't exist
         let app_dir = home_dir.join(".preft");
         std::fs::create_dir_all(&app_dir)?;
-        
+
         // Open or create the database file
         let db_path = app_dir.join("preft.db");
         let conn = Connection::open(db_path)?;
-        
+
         // Initialize the database with just the basic tables
-        let mut db = Database { conn, encryption: None, encryption_config };
+        let mut db = Database { conn, encryption: None, encryption_config, dirty: std::cell::Cell::new(false) };
         db.initialize()?;
-        
+
         Ok(db)
     }
 
@@ -86,7 +104,7 @@ impl Database {
     pub fn from_connection(conn: Connection) -> Self {
         let encryption_config = EncryptionConfig::load()
             .unwrap_or_else(|_| EncryptionConfig::default());
-        Database { conn, encryption: None, encryption_config }
+        Database { conn, encryption: None, encryption_config, dirty: std::cell::Cell::new(false) }
     }
 
     /// Build a fully-initialized database (schema + migrations) against an
@@ -108,10 +126,28 @@ impl Database {
             conn,
             encryption: None,
             encryption_config: EncryptionConfig::default(),
+            dirty: std::cell::Cell::new(false),
         };
         db.initialize()?;
         migrations::run_migrations(&mut db.conn)?;
         Ok(db)
+    }
+
+    /// Marks the database as having financial-data changes since
+    /// construction (or the last reset). Called by every write method that
+    /// touches flows or categories -- *not* by `save_user_settings`; see
+    /// `is_dirty`.
+    fn mark_dirty(&self) {
+        self.dirty.set(true);
+    }
+
+    /// Whether any *financial* data (flows/categories) has changed since
+    /// this `Database` was constructed -- not settings/preferences, see
+    /// `dirty`'s doc comment. Used to skip the automatic on-exit backup when
+    /// nothing worth backing up actually changed this session -- see
+    /// `PreftApp::on_exit`.
+    pub fn is_dirty(&self) -> bool {
+        self.dirty.get()
     }
 
     /// Mark this test database as encrypted using an explicit password/salt
@@ -253,12 +289,18 @@ impl Database {
         Ok(())
     }
 
+    // Deliberately does *not* call `mark_dirty` (see its doc comment):
+    // `UserSettings` is UI/app preferences (year filter, hidden categories,
+    // backup directory, backup history, ...), not financial records, and
+    // every call site is exactly that kind of routine preference change --
+    // marking dirty here meant something as trivial as switching the year
+    // filter would trigger a full automatic backup on the next exit.
     pub fn save_user_settings(&self, settings: &UserSettings) -> Result<()> {
         let settings_json = serde_json::to_string(settings)?;
-        
+
         // Encrypt the settings if encryption is enabled
         let encrypted_json = self.encrypt_data(&settings_json)?;
-        
+
         self.conn.execute(
             "INSERT OR REPLACE INTO user_settings (id, settings_json)
              VALUES (1, ?1)",
@@ -371,6 +413,7 @@ impl Database {
 
         // Commit transaction
         tx.commit()?;
+        self.mark_dirty();
         Ok(())
     }
 
@@ -393,6 +436,7 @@ impl Database {
             ],
         )?;
 
+        self.mark_dirty();
         Ok(())
     }
 
@@ -492,6 +536,7 @@ impl Database {
             params![category_id],
         )?;
 
+        self.mark_dirty();
         Ok(())
     }
 
@@ -502,6 +547,7 @@ impl Database {
             params![category_id],
         )?;
 
+        self.mark_dirty();
         Ok(())
     }
 
@@ -512,6 +558,7 @@ impl Database {
             params![flow_id],
         )?;
 
+        self.mark_dirty();
         Ok(())
     }
 
@@ -708,7 +755,7 @@ impl Database {
             return Err(anyhow::anyhow!("Encrypted backup detected but no password provided. Use force_unencrypted_restore=true for data recovery (this will result in an unencrypted database)"));
         }
 
-        if is_encrypted_backup && password.is_some() {
+        let result = if is_encrypted_backup && password.is_some() {
             log::info!("Using encrypted restore path");
             // Restore encrypted backup
             self.restore_encrypted(backup_path, password.unwrap())
@@ -716,7 +763,12 @@ impl Database {
             log::info!("Using unencrypted restore path");
             // Restore as unencrypted (either it's unencrypted or we're forcing unencrypted restore)
             self.restore_unencrypted(backup_path)
+        };
+
+        if result.is_ok() {
+            self.mark_dirty();
         }
+        result
     }
 
     /// Detect if a backup file is encrypted
@@ -1064,7 +1116,8 @@ impl Database {
         
         // Commit the transaction
         tx.commit()?;
-        
+        self.mark_dirty();
+
         log::info!("Database restore from SQL dump completed from: {:?}", dump_path);
         Ok(())
     }
