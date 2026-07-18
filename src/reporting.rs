@@ -124,13 +124,36 @@ fn net_total(category_totals: &HashMap<String, f64>, categories: &HashMap<String
         .sum()
 }
 
+/// Inserts thousands separators into a string of ASCII digits (no sign, no
+/// decimal point), e.g. `"1234567"` -> `"1,234,567"`.
+fn group_thousands(digits: &str) -> String {
+    let mut grouped = String::new();
+    for (i, c) in digits.chars().rev().enumerate() {
+        if i > 0 && i % 3 == 0 {
+            grouped.push(',');
+        }
+        grouped.push(c);
+    }
+    grouped.chars().rev().collect()
+}
+
+/// Formats a non-negative amount to two decimal places with thousands
+/// separators in the integer part, e.g. `1234567.5` -> `"1,234,567.50"`.
+/// Rounds to the nearest cent the same way `{:.2}` would.
+fn format_amount_grouped(amount: f64) -> String {
+    let cents = (amount * 100.0).round() as i64;
+    format!("{}.{:02}", group_thousands(&(cents / 100).to_string()), cents % 100)
+}
+
 /// Formats a dollar amount, using parentheses for negatives (accounting
-/// style, e.g. `"($100.00)"`) instead of a leading minus sign (`"$-100.00"`).
+/// style, e.g. `"($1,234.00)"`) instead of a leading minus sign
+/// (`"$-1,234.00"`), and thousands separators so large amounts stay
+/// readable at a glance.
 fn format_currency(amount: f64) -> String {
     if amount < 0.0 {
-        format!("(${:.2})", -amount)
+        format!("(${})", format_amount_grouped(-amount))
     } else {
-        format!("${:.2}", amount)
+        format!("${}", format_amount_grouped(amount))
     }
 }
 
@@ -190,8 +213,14 @@ fn format_field_value(field: &CategoryField, flow: &Flow) -> String {
                 Err(_) => value.clone(),
             }
         },
-        FieldType::Integer => value.parse::<i64>().map(|n| n.to_string()).unwrap_or_else(|_| value.clone()),
-        FieldType::Float => value.parse::<f64>().map(|n| format!("{:.2}", n)).unwrap_or_else(|_| value.clone()),
+        FieldType::Integer => value.parse::<i64>().map(|n| {
+            let sign = if n < 0 { "-" } else { "" };
+            format!("{}{}", sign, group_thousands(&n.unsigned_abs().to_string()))
+        }).unwrap_or_else(|_| value.clone()),
+        FieldType::Float => value.parse::<f64>().map(|n| {
+            let sign = if n < 0.0 { "-" } else { "" };
+            format!("{}{}", sign, format_amount_grouped(n.abs()))
+        }).unwrap_or_else(|_| value.clone()),
         _ => value.clone(),
     }
 }
@@ -241,6 +270,55 @@ fn max_chars_for_width(width_mm: f64, font_size_pt: f64) -> usize {
     ((width_mm / avg_char_width_mm).floor() as usize).max(4)
 }
 
+/// Estimated on-page width of `text` at `font_size_pt`, using the same
+/// average-glyph-width heuristic as `max_chars_for_width` -- `printpdf`
+/// doesn't expose font metrics for externally-loaded fonts, so there's no
+/// way to measure exact text width. Amount columns are mostly digits and a
+/// handful of narrow, fairly uniform-width symbols (`$`, `.`, `,`, `(`, `)`),
+/// so this estimate is close enough to right-align them without the visible
+/// jitter it would cause on free-form text like Description.
+fn estimate_text_width_mm(text: &str, font_size_pt: f64) -> f64 {
+    const PT_TO_MM: f64 = 0.3528;
+    let avg_char_width_mm = (font_size_pt * PT_TO_MM * 0.5).max(0.1);
+    text.chars().count() as f64 * avg_char_width_mm
+}
+
+/// X position (mm from the page's left edge) to draw `text` at so its right
+/// edge lands approximately at `right_edge_mm` -- see `estimate_text_width_mm`
+/// for why this is an estimate, not an exact measurement.
+fn right_align_x(text: &str, right_edge_mm: f64, font_size_pt: f64) -> f64 {
+    right_edge_mm - estimate_text_width_mm(text, font_size_pt)
+}
+
+/// Like `right_align_x`, but never returns a position left of `left_edge_mm`.
+/// The width estimate it's built on is a heuristic (`estimate_text_width_mm`),
+/// not an exact measurement -- for an unusually wide value (or just an
+/// underestimate), a plain `right_align_x` could push text left into the
+/// previous column entirely. This floors it at the column's own left edge
+/// instead: for an amount too wide to right-align cleanly, drawing it flush
+/// against the column boundary is a better failure mode than overlapping
+/// the Date/Category column to its left.
+fn right_align_x_clamped(text: &str, right_edge_mm: f64, left_edge_mm: f64, font_size_pt: f64) -> f64 {
+    right_align_x(text, right_edge_mm, font_size_pt).max(left_edge_mm)
+}
+
+/// X position to center `text` between `left_edge_mm` and `right_edge_mm`,
+/// floored at `left_edge_mm` the same way `right_align_x_clamped` is. Used
+/// for column *header* labels rather than `right_align_x_clamped`: headers
+/// are drawn in the bold header font, and `estimate_text_width_mm`'s
+/// character-width heuristic was tuned against amount values (mostly
+/// digits/currency symbols in the regular body font, narrower on average
+/// than bold word text), so it systematically underestimates a bold header
+/// label's actual width. Centering makes that underestimate much less
+/// visible -- the error splits across both sides of the column instead of
+/// being dumped entirely into the neighboring column the way a hard
+/// right-align would.
+fn center_align_x(text: &str, left_edge_mm: f64, right_edge_mm: f64, font_size_pt: f64) -> f64 {
+    let width = estimate_text_width_mm(text, font_size_pt);
+    let center = (left_edge_mm + right_edge_mm) / 2.0;
+    (center - width / 2.0).max(left_edge_mm)
+}
+
 /// Body text shrinks as more custom-field columns need to fit alongside
 /// Date/Amount/Description, since `printpdf` lays out text at fixed
 /// coordinates with no automatic column sizing. Grouped sections shrink a
@@ -267,6 +345,10 @@ fn body_font_size_for_extra_columns(extra_column_count: usize, is_grouped: bool)
 struct ColumnLayout {
     date_x: f64,
     amount_x: f64,
+    /// Right edge to align amount text to within the Amount column (a few mm
+    /// before `description_x`, so a right-aligned amount doesn't butt right
+    /// up against the Description column).
+    amount_right_edge_x: f64,
     description_x: f64,
     column_width: f64,
     extra_field_x: Vec<f64>,
@@ -278,11 +360,13 @@ fn compute_column_layout(extra_field_count: usize) -> ColumnLayout {
     const RIGHT_MARGIN_MM: f64 = 10.0;
     const DATE_WIDTH_MM: f64 = 35.0;
     const AMOUNT_WIDTH_MM: f64 = 25.0;
+    const AMOUNT_COLUMN_GAP_MM: f64 = 3.0;
     const MIN_REMAINING_WIDTH_MM: f64 = 20.0;
 
     let date_x = LEFT_MARGIN_MM;
     let amount_x = date_x + DATE_WIDTH_MM;
     let description_x = amount_x + AMOUNT_WIDTH_MM;
+    let amount_right_edge_x = description_x - AMOUNT_COLUMN_GAP_MM;
     let remaining_width = (PAGE_WIDTH_MM - RIGHT_MARGIN_MM - description_x).max(MIN_REMAINING_WIDTH_MM);
     let column_count = (extra_field_count + 1) as f64; // Description + extras
     let column_width = remaining_width / column_count;
@@ -294,6 +378,7 @@ fn compute_column_layout(extra_field_count: usize) -> ColumnLayout {
     ColumnLayout {
         date_x,
         amount_x,
+        amount_right_edge_x,
         description_x,
         column_width,
         extra_field_x,
@@ -421,7 +506,8 @@ fn render_flow_row(
         .max(1);
 
     layer.use_text(&flow.date.format("%B %d, %Y").to_string(), body_size, Mm(layout.date_x), *y_pos, body_font);
-    layer.use_text(&format_currency(flow.amount), body_size, Mm(layout.amount_x), *y_pos, body_font);
+    let amount_text = format_currency(flow.amount);
+    layer.use_text(&amount_text, body_size, Mm(right_align_x_clamped(&amount_text, layout.amount_right_edge_x, layout.amount_x, body_size)), *y_pos, body_font);
 
     let mut line_y = *y_pos;
     for line in &description_lines {
@@ -595,16 +681,6 @@ impl ReportGenerator {
             },
         };
 
-        // Cover page: title, subtitle, and time period only -- no flow detail,
-        // so it's a standalone summary of what the report covers at a glance.
-        let cover_layer = doc.get_page(page1).get_layer(layer1);
-        cover_layer.use_text(&request.title, 26.0, Mm(20.0), Mm(180.0), &title_font);
-        if !request.subtitle.is_empty() {
-            cover_layer.use_text(&request.subtitle, 16.0, Mm(20.0), Mm(163.0), &subtitle_font);
-        }
-        cover_layer.use_text(&time_period_text, 14.0, Mm(20.0), Mm(148.0), &subtitle_font);
-        draw_page_chrome(&cover_layer, 1, &time_period_text, &body_font);
-
         // Group flows by category
         let mut category_flows: HashMap<String, Vec<&Flow>> = HashMap::new();
         for flow in sorted_flows {
@@ -613,12 +689,53 @@ impl ReportGenerator {
                 .push(flow);
         }
 
+        // Categories are rendered in the same order as the category
+        // selection dropdown (`self.category_order`), not `category_flows`'
+        // arbitrary `HashMap` iteration order -- otherwise which category
+        // shows up first/second/etc. changes randomly between report runs.
+        // Computed once, up front, so both the cover page's table of
+        // contents and the detail-page loop below agree on the order.
+        let category_display_order = ordered_category_ids(&self.category_order, &category_flows);
+
+        // Cover page: title, subtitle, time period, and a mini table of
+        // contents -- the categories that appear (in the same order as their
+        // detail pages) plus a pointer to the summary at the end. No page
+        // numbers here: what page each category lands on isn't known until
+        // it's actually rendered below.
+        let cover_layer = doc.get_page(page1).get_layer(layer1);
+        cover_layer.use_text(&request.title, 26.0, Mm(20.0), Mm(180.0), &title_font);
+        if !request.subtitle.is_empty() {
+            cover_layer.use_text(&request.subtitle, 16.0, Mm(20.0), Mm(163.0), &subtitle_font);
+        }
+        cover_layer.use_text(&time_period_text, 14.0, Mm(20.0), Mm(148.0), &subtitle_font);
+        // No page-number/period chrome on the cover page itself -- it already
+        // shows the period as part of its own content, and numbering starts
+        // on the first page after it (see `page_number: 0` below).
+
+        let mut cover_y = Mm(130.0);
+        if !category_display_order.is_empty() {
+            cover_layer.use_text("Categories in this report:", 13.0, Mm(20.0), cover_y, &header_font);
+            cover_y -= Mm(8.0);
+            for category_id in &category_display_order {
+                let category_name = self.categories.get(category_id)
+                    .map(|info| info.name.as_str())
+                    .unwrap_or(category_id);
+                cover_layer.use_text(&format!("- {}", category_name), 11.0, Mm(24.0), cover_y, &subtitle_font);
+                cover_y -= Mm(6.0);
+            }
+            cover_y -= Mm(6.0);
+        }
+        cover_layer.use_text("A financial summary appears at the end of this report.", 11.0, Mm(20.0), cover_y, &subtitle_font);
+
         let mut cursor = PageCursor {
             doc: &doc,
             page: page1,
             layer_idx: layer1,
             y_pos: Mm(CONTENT_TOP_MM),
-            page_number: 1,
+            // Starts at 0 (not 1) so the first page created after the cover
+            // page -- the first category's page -- becomes "Page 1", not
+            // "Page 2". The cover page itself is never numbered.
+            page_number: 0,
             time_period_text: &time_period_text,
             chrome_font: &body_font,
         };
@@ -626,27 +743,23 @@ impl ReportGenerator {
         // Store category totals for later use
         let mut category_totals: HashMap<String, f64> = HashMap::new();
 
-        // Categories are rendered in the same order as the category
-        // selection dropdown (`self.category_order`), not `category_flows`'
-        // arbitrary `HashMap` iteration order -- otherwise which category
-        // shows up first/second/etc. changes randomly between report runs.
-        for category_id in ordered_category_ids(&self.category_order, &category_flows) {
-            let flows = &category_flows[&category_id];
+        for category_id in &category_display_order {
+            let flows = &category_flows[category_id];
 
             // Each category always starts on its own fresh page.
             let mut layer = cursor.start_new_page();
 
             // Add category header
-            let category_name = self.categories.get(&category_id)
+            let category_name = self.categories.get(category_id)
                 .map(|info| info.name.as_str())
-                .unwrap_or(&category_id);
+                .unwrap_or(category_id);
             layer.use_text(&format!("Category: {}", category_name), 16.0, Mm(20.0), cursor.y_pos, &header_font);
             cursor.y_pos -= Mm(15.0);
 
             // Custom fields (other than the active group-by field, which is
             // already shown as each group's section header) get their own
             // column, sharing the remaining page width with Description.
-            let category_fields = self.categories.get(&category_id)
+            let category_fields = self.categories.get(category_id)
                 .map(|info| info.fields.as_slice())
                 .unwrap_or(&[]);
             let visible_fields = visible_custom_fields(category_fields, &request.group_by);
@@ -657,7 +770,7 @@ impl ReportGenerator {
 
             // Add table headers
             layer.use_text("Date", header_size, Mm(layout.date_x), cursor.y_pos, &header_font);
-            layer.use_text("Amount", header_size, Mm(layout.amount_x), cursor.y_pos, &header_font);
+            layer.use_text("Amount", header_size, Mm(center_align_x("Amount", layout.amount_x, layout.amount_right_edge_x, header_size)), cursor.y_pos, &header_font);
             layer.use_text("Description", header_size, Mm(layout.description_x), cursor.y_pos, &header_font);
             for (field, x) in visible_fields.iter().zip(&layout.extra_field_x) {
                 layer.use_text(&field.display_name(), header_size, Mm(*x), cursor.y_pos, &header_font);
@@ -695,8 +808,9 @@ impl ReportGenerator {
                     // dynamic (variable custom-field columns).
                     layer = cursor.ensure_space(15.0);
                     let group_total: f64 = group_flows.iter().map(|f| f.amount).sum();
+                    let group_total_text = format_currency(group_total);
                     layer.use_text("Group Total:", 12.0, Mm(20.0), cursor.y_pos, &body_font);
-                    layer.use_text(&format_currency(group_total), 12.0, Mm(layout.amount_x), cursor.y_pos, &body_font);
+                    layer.use_text(&group_total_text, 12.0, Mm(right_align_x_clamped(&group_total_text, layout.amount_right_edge_x, layout.amount_x, 12.0)), cursor.y_pos, &body_font);
                     cursor.y_pos -= Mm(15.0);
                 }
             } else {
@@ -713,7 +827,9 @@ impl ReportGenerator {
             cursor.y_pos -= Mm(8.0);
             let category_total: f64 = flows.iter().map(|f| f.amount).sum();
             category_totals.insert(category_id.clone(), category_total);
-            layer.use_text(&format!("Category Total: {}", format_currency(category_total)), 14.0, Mm(20.0), cursor.y_pos, &header_font);
+            let category_total_text = format_currency(category_total);
+            layer.use_text("Category Total:", 14.0, Mm(20.0), cursor.y_pos, &header_font);
+            layer.use_text(&category_total_text, 14.0, Mm(right_align_x_clamped(&category_total_text, layout.amount_right_edge_x, layout.amount_x, 14.0)), cursor.y_pos, &header_font);
         }
 
         // Add summary page
@@ -735,9 +851,10 @@ impl ReportGenerator {
 
         // Table header
         const SUMMARY_AMOUNT_X: f64 = 120.0;
+        const SUMMARY_AMOUNT_RIGHT_EDGE_MM: f64 = 170.0;
         layer = cursor.ensure_space(13.0);
         layer.use_text("Category", 12.0, Mm(20.0), cursor.y_pos, &header_font);
-        layer.use_text("Total", 12.0, Mm(SUMMARY_AMOUNT_X), cursor.y_pos, &header_font);
+        layer.use_text("Total", 12.0, Mm(center_align_x("Total", SUMMARY_AMOUNT_X, SUMMARY_AMOUNT_RIGHT_EDGE_MM, 12.0)), cursor.y_pos, &header_font);
         cursor.y_pos -= Mm(8.0);
         layer.add_line_break();
         cursor.y_pos -= Mm(5.0);
@@ -770,7 +887,8 @@ impl ReportGenerator {
 
             layer = cursor.ensure_space(12.0);
             layer.use_text(category_name, 12.0, Mm(20.0), cursor.y_pos, &body_font);
-            layer.use_text(&format_currency(displayed), 12.0, Mm(SUMMARY_AMOUNT_X), cursor.y_pos, &body_font);
+            let displayed_text = format_currency(displayed);
+            layer.use_text(&displayed_text, 12.0, Mm(right_align_x_clamped(&displayed_text, SUMMARY_AMOUNT_RIGHT_EDGE_MM, SUMMARY_AMOUNT_X, 12.0)), cursor.y_pos, &body_font);
             cursor.y_pos -= Mm(12.0);
         }
 
@@ -781,19 +899,22 @@ impl ReportGenerator {
         layer.add_line_break();
         cursor.y_pos -= Mm(10.0);
 
+        let total_income_text = format_currency(total_income);
         layer.use_text("Total Income:", 12.0, Mm(20.0), cursor.y_pos, &body_font);
-        layer.use_text(&format_currency(total_income), 12.0, Mm(SUMMARY_AMOUNT_X), cursor.y_pos, &body_font);
+        layer.use_text(&total_income_text, 12.0, Mm(right_align_x_clamped(&total_income_text, SUMMARY_AMOUNT_RIGHT_EDGE_MM, SUMMARY_AMOUNT_X, 12.0)), cursor.y_pos, &body_font);
         cursor.y_pos -= Mm(12.0);
 
+        let total_expense_text = format_currency(total_expense);
         layer.use_text("Total Expense:", 12.0, Mm(20.0), cursor.y_pos, &body_font);
-        layer.use_text(&format_currency(total_expense), 12.0, Mm(SUMMARY_AMOUNT_X), cursor.y_pos, &body_font);
+        layer.use_text(&total_expense_text, 12.0, Mm(right_align_x_clamped(&total_expense_text, SUMMARY_AMOUNT_RIGHT_EDGE_MM, SUMMARY_AMOUNT_X, 12.0)), cursor.y_pos, &body_font);
         cursor.y_pos -= Mm(16.0);
 
         // Net total, same reversed convention: a net loss (expenses exceeded
         // income) displays as positive, a net gain as negative.
         let overall_total = -net_total(&category_totals, &self.categories);
+        let overall_total_text = format_currency(overall_total);
         layer.use_text("Net Total:", 16.0, Mm(20.0), cursor.y_pos, &header_font);
-        layer.use_text(&format_currency(overall_total), 16.0, Mm(SUMMARY_AMOUNT_X), cursor.y_pos, &header_font);
+        layer.use_text(&overall_total_text, 16.0, Mm(right_align_x_clamped(&overall_total_text, SUMMARY_AMOUNT_RIGHT_EDGE_MM, SUMMARY_AMOUNT_X, 16.0)), cursor.y_pos, &header_font);
 
         // Save the document
         let mut buffer = Vec::new();
@@ -1050,6 +1171,26 @@ mod tests {
         assert_eq!(format_currency(0.0), "$0.00");
     }
 
+    #[test]
+    fn format_currency_thousands_get_a_separator() {
+        assert_eq!(format_currency(1234.5), "$1,234.50");
+    }
+
+    #[test]
+    fn format_currency_millions_get_two_separators() {
+        assert_eq!(format_currency(12345678.9), "$12,345,678.90");
+    }
+
+    #[test]
+    fn format_currency_negative_thousands_use_parentheses_with_separator() {
+        assert_eq!(format_currency(-1234.5), "($1,234.50)");
+    }
+
+    #[test]
+    fn format_currency_under_a_thousand_has_no_separator() {
+        assert_eq!(format_currency(999.99), "$999.99");
+    }
+
     // --- summary_display_value ---
 
     #[test]
@@ -1164,13 +1305,31 @@ mod tests {
     #[test]
     fn format_field_value_currency_normalizes_symbols() {
         let field = CategoryField { name: "cost".to_string(), field_type: FieldType::Currency, required: false, default_value: None };
-        assert_eq!(format_field_value(&field, &flow_with_custom_field("cost", "$1,234.5")), "$1234.50");
+        assert_eq!(format_field_value(&field, &flow_with_custom_field("cost", "$1,234.5")), "$1,234.50");
     }
 
     #[test]
     fn format_field_value_invalid_number_falls_back_to_raw_value() {
         let field = CategoryField { name: "count".to_string(), field_type: FieldType::Integer, required: false, default_value: None };
         assert_eq!(format_field_value(&field, &flow_with_custom_field("count", "not-a-number")), "not-a-number");
+    }
+
+    #[test]
+    fn format_field_value_integer_gets_a_thousands_separator() {
+        let field = CategoryField { name: "count".to_string(), field_type: FieldType::Integer, required: false, default_value: None };
+        assert_eq!(format_field_value(&field, &flow_with_custom_field("count", "1234567")), "1,234,567");
+    }
+
+    #[test]
+    fn format_field_value_negative_integer_keeps_the_minus_sign() {
+        let field = CategoryField { name: "count".to_string(), field_type: FieldType::Integer, required: false, default_value: None };
+        assert_eq!(format_field_value(&field, &flow_with_custom_field("count", "-1234")), "-1,234");
+    }
+
+    #[test]
+    fn format_field_value_float_gets_a_thousands_separator() {
+        let field = CategoryField { name: "amount".to_string(), field_type: FieldType::Float, required: false, default_value: None };
+        assert_eq!(format_field_value(&field, &flow_with_custom_field("amount", "1234567.5")), "1,234,567.50");
     }
 
     // --- wrap_text ---
@@ -1216,6 +1375,57 @@ mod tests {
         assert!(max_chars_for_width(0.1, 12.0) >= 4);
     }
 
+    // --- right_align_x ---
+
+    #[test]
+    fn right_align_x_places_longer_text_further_left() {
+        let short_x = right_align_x("$5.00", 100.0, 12.0);
+        let long_x = right_align_x("$5,000,000.00", 100.0, 12.0);
+        assert!(long_x < short_x, "wider text should start further left to keep the same right edge");
+    }
+
+    #[test]
+    fn right_align_x_estimated_right_edge_matches_the_target() {
+        let text = "$1,234.00";
+        let right_edge = 100.0;
+        let x = right_align_x(text, right_edge, 12.0);
+        assert_eq!(x + estimate_text_width_mm(text, 12.0), right_edge);
+    }
+
+    // --- right_align_x_clamped ---
+
+    #[test]
+    fn right_align_x_clamped_floors_at_the_left_edge_for_text_too_wide_to_fit() {
+        // A right edge close to the left edge, with text wide enough that a
+        // plain `right_align_x` would push it left of the column entirely.
+        let x = right_align_x_clamped("$999,999,999.99", 40.0, 20.0, 12.0);
+        assert_eq!(x, 20.0);
+    }
+
+    #[test]
+    fn right_align_x_clamped_matches_right_align_x_when_text_fits() {
+        let text = "$5.00";
+        let right_edge = 100.0;
+        let left_edge = 20.0;
+        assert_eq!(right_align_x_clamped(text, right_edge, left_edge, 12.0), right_align_x(text, right_edge, 12.0));
+    }
+
+    // --- center_align_x ---
+
+    #[test]
+    fn center_align_x_centers_text_within_the_bounds() {
+        let x = center_align_x("Amount", 55.0, 77.0, 12.0);
+        let width = estimate_text_width_mm("Amount", 12.0);
+        // Left and right gaps around the text should be equal.
+        assert!((x - 55.0 - (77.0 - 55.0 - width) / 2.0).abs() < 1e-9);
+    }
+
+    #[test]
+    fn center_align_x_floors_at_the_left_edge_for_text_too_wide_to_fit() {
+        let x = center_align_x("A Very Long Header Label Indeed", 55.0, 77.0, 12.0);
+        assert_eq!(x, 55.0);
+    }
+
     #[test]
     fn body_font_size_shrinks_as_extra_columns_grow() {
         let zero = body_font_size_for_extra_columns(0, false);
@@ -1252,6 +1462,13 @@ mod tests {
         assert!(layout.amount_x > layout.date_x);
         assert!(layout.description_x > layout.amount_x);
         assert!(layout.column_width > 0.0);
+    }
+
+    #[test]
+    fn compute_column_layout_amount_right_edge_stays_within_the_amount_column() {
+        let layout = compute_column_layout(0);
+        assert!(layout.amount_right_edge_x > layout.amount_x, "right edge should be to the right of where the column starts");
+        assert!(layout.amount_right_edge_x < layout.description_x, "right edge should leave a gap before the next column");
     }
 
     #[test]
